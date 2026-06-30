@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Dados de usuário (não versionados)
+.excerpta_settings.json
+.excerpta_recent.json
+
+# Build / distribuição
+excerpta.zip
+*.zip
+
+# Claude Code
+.claude/

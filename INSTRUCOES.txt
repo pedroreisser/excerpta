@@ -1,0 +1,51 @@
+=====================================================
+  EXCERPTA — Extrator de Artigos Científicos em PDF
+=====================================================
+
+REQUISITO: Python 3.9 ou superior
+  • Windows: https://python.org/downloads
+    (marque "Add Python to PATH" na instalação)
+  • Linux/Mac: normalmente já vem instalado
+
+
+COMO INICIAR
+────────────
+Windows:
+  Dê duplo clique em "iniciar.bat"
+  O programa instala as dependências automaticamente na primeira vez.
+
+Linux:
+  Abra o terminal nesta pasta e execute:
+    python3 iniciar_extrator.py
+
+  Ou dê duplo clique em "ExtratordArtigos.desktop"
+  (pode precisar marcar como executável: botão direito → Propriedades → Executável)
+
+
+NA PRIMEIRA EXECUÇÃO
+────────────────────
+Será perguntado se deseja instalar as dependências.
+  • Dependências obrigatórias (pequenas, ~50 MB): pymupdf4llm, customtkinter, tkinterdnd2
+  • Suporte a OCR (opcional, ~2 GB, 10–20 min): docling
+    → necessário apenas para PDFs escaneados (sem texto nativo)
+
+Nenhuma instalação requer permissão de administrador.
+
+
+COMO USAR
+─────────
+O Excerpta extrai seções de artigos científicos em PDF.
+
+  1. Selecione a pasta com os PDFs
+  2. Os artigos da pasta são carregados automaticamente
+  3. Escolha quais seções extrair (abstract, métodos, resultados…)
+     ou deixe "Artigo completo" marcado
+  4. Clique em "Extrair artigos"
+  5. Salve o arquivo de texto gerado
+
+
+DÚVIDAS / PROBLEMAS
+────────────────────
+• Se o programa não abrir após instalar o Python, reinicie o computador.
+• Em caso de erro de permissão no Linux, tente:
+    pip install pymupdf4llm customtkinter tkinterdnd2 --break-system-packages
