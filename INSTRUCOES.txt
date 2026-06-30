@@ -14,12 +14,9 @@ Windows:
   Dê duplo clique em "iniciar.bat"
   O programa instala as dependências automaticamente na primeira vez.
 
-Linux:
+Linux/Mac:
   Abra o terminal nesta pasta e execute:
     python3 iniciar_extrator.py
-
-  Ou dê duplo clique em "ExtratordArtigos.desktop"
-  (pode precisar marcar como executável: botão direito → Propriedades → Executável)
 
 
 NA PRIMEIRA EXECUÇÃO
