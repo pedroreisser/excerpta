@@ -257,21 +257,41 @@ def _limpar_markdown_imagens(md):
     return re.sub(r'\n{3,}', '\n\n', '\n'.join(resultado))
 
 
+# Marca d'água/rodapé de sites de PDF pirata (Sci-Hub, Library Genesis, Anna's
+# Archive) que às vezes fica gravada como texto real na página — o motor de
+# extração copia junto. Removida por linha para não afetar o resto do conteúdo.
+_SITE_PIRATA_RE = re.compile(
+    r"sci[-\s]?hub(?:\.\w{2,6})?"
+    r"|library\s*genesis|libgen(?:\.\w{2,6})?"
+    r"|anna'?s?[-\s]?archive(?:\.\w{2,6})?",
+    re.IGNORECASE
+)
+
+
+def _limpar_marcas_pirata(md):
+    """Remove linhas com marca d'água de sites de PDF pirata do Markdown."""
+    linhas = md.splitlines()
+    return '\n'.join(l for l in linhas if not _SITE_PIRATA_RE.search(l))
+
+
 def converter_pdf(caminho):
     """Converte PDF para Markdown. Retorna (markdown, nome_motor)."""
     tipo = detectar_tipo_pdf(caminho)
     if tipo == 'digital' and PYMUPDF4LLM_OK:
         md = _pymupdf4llm.to_markdown(
             caminho, ignore_images=True, ignore_graphics=True)
-        return _limpar_markdown_imagens(md), 'pymupdf4llm'
+        md = _limpar_marcas_pirata(_limpar_markdown_imagens(md))
+        return md, 'pymupdf4llm'
     if DOCLING_OK:
         conv = _DoclingConverter()
         result = conv.convert(caminho)
-        return result.document.export_to_markdown(), 'docling'
+        md = _limpar_marcas_pirata(result.document.export_to_markdown())
+        return md, 'docling'
     if PYMUPDF4LLM_OK:
         md = _pymupdf4llm.to_markdown(
             caminho, ignore_images=True, ignore_graphics=True)
-        return _limpar_markdown_imagens(md), 'pymupdf4llm'
+        md = _limpar_marcas_pirata(_limpar_markdown_imagens(md))
+        return md, 'pymupdf4llm'
     raise ImportError("Nenhum motor instalado. Execute: pip install pymupdf4llm")
 
 
