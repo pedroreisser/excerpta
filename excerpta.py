@@ -3,9 +3,13 @@ from tkinter import filedialog, messagebox
 import threading
 import re
 import os
+import sys
 import json
 import subprocess
 import time
+import urllib.request
+import urllib.error
+import webbrowser
 from functools import lru_cache
 
 # ── Motores de extração ────────────────────────────────────────────────────────
@@ -32,33 +36,6 @@ ctk.set_default_color_theme("blue")
 
 # ══════════════════════════════════════ constantes ══════════════════════════════
 
-
-_SECAO_KEYWORDS = {
-    'abstract':    [r'abstract', r'resumo', r'summary'],
-    'introducao':  [r'introduction', r'introdução', r'background',
-                    r'overview', r'context'],
-    'metodos':     [r'materials?\s+and\s+methods?', r'methods?', r'methodology',
-                    r'métodos?', r'materiais?\s+e\s+métodos?',
-                    r'experimental\s+procedures?', r'study\s+design',
-                    r'patients?\s+and\s+methods?'],
-    'resultados':  [r'results?', r'resultados?', r'findings', r'outcomes?'],
-    'discussao':   [r'discussion', r'discussão', r'interpretation', r'analysis'],
-    'conclusao':   [r'conclusions?', r'concluding\s+remarks?',
-                    r'conclusões?', r'conclusão',
-                    r'summary\s+and\s+conclusions?', r'final\s+remarks?',
-                    r'perspectives?', r'closing\s+remarks?'],
-    'referencias': [r'references?', r'bibliography', r'literature\s+cited',
-                    r'works?\s+cited', r'referências?', r'referencia'],
-    'suplementar': [r'supporting\s+information', r'supplementary\s+material',
-                    r'supplementary\s+data', r'supplementary\s+methods?',
-                    r'supplemental', r'appendix', r'appendices',
-                    r'material\s+suplementar'],
-}
-
-_SECAO_PATTERNS = {
-    key: re.compile(r'^(?:' + '|'.join(patterns) + r')$', re.IGNORECASE)
-    for key, patterns in _SECAO_KEYWORDS.items()
-}
 
 _NUM_PREFIX_RE = re.compile(
     r'^[\d]+(?:\.[\d]+)*\.?\s*\|\s*'                      # "1 | ", "2.3 | "
@@ -111,6 +88,12 @@ _TEMPO_OCR_S       = 45.0
 _TAXA_DIGITAL_S_KB = _TEMPO_DIGITAL_S / 2048.0
 _TAXA_OCR_S_KB     = _TEMPO_OCR_S     / 2048.0
 _FUZZY_LIMIAR    = 0.85
+
+OLLAMA_URL_PADRAO    = 'http://localhost:11434'
+OLLAMA_MODELO_PADRAO = 'qwen2.5:7b-instruct'
+OLLAMA_TIMEOUT_S     = 25
+OLLAMA_INSTALL_CMD   = 'curl -fsSL https://ollama.com/install.sh | sh'
+OLLAMA_DOWNLOAD_URL  = 'https://ollama.com/download'
 
 # Palavras fortes: inequívocas, verificadas por "começa com" (degrau 1)
 _SECAO_STRONG_PREFIXES = {
@@ -172,7 +155,6 @@ ACCENT      = "#3D6CAE"
 ACCENT_HOV  = "#2D5599"
 ACCENT_LT   = "#EEF3FA"
 ACCENT_BORD = "#B6CCE8"
-ACCENT_HDR  = "#EBF0F8"
 ACCENT_TXT  = "#2B4F8C"
 
 GREEN       = "#2E7D4F"
@@ -182,7 +164,6 @@ GREEN_BORD  = "#A4D4B4"
 GREEN_HDR   = "#EAF5EF"
 GREEN_TXT   = "#1A5C36"
 
-GRAY_CARD   = "#F5F6F8"
 GRAY_BORD   = "#D4D6DA"
 GRAY_TEXT   = "#666C75"
 
@@ -193,7 +174,6 @@ DIVIDER     = "#E2E4E8"
 C_OK        = "#2E7D4F"
 C_WARN      = "#B45309"
 C_ERR       = "#B91C1C"
-C_WARN_SOFT = "#CA8A04"   # provável duplicata (amarelo, entre C_WARN e C_OK)
 
 _COR_PYMUPDF = ACCENT
 _COR_DOCLING = "#7C3AED"
@@ -584,38 +564,93 @@ def _extrair_secoes(md, secoes_cfg):
     return encontradas, nao_encontradas, partes
 
 
-def extrair_secao_texto(markdown, secao_key):
-    """Extrai uma seção do Markdown baseada nos cabeçalhos."""
-    if secao_key == 'tudo':
-        return markdown
+def _extrair_secoes_ia(md_texto, secoes):
+    """Pergunta a um modelo local (Ollama) onde cada seção não encontrada começa.
 
-    linhas = markdown.splitlines()
+    Retorna {secao: trecho_inicial_literal, ...} com o que o modelo respondeu,
+    ou {} se o Ollama estiver indisponível, der erro ou estourar o timeout —
+    nesses casos o chamador deve seguir para o fallback antigo normalmente.
+    """
+    if not secoes:
+        return {}
 
-    headers = []
-    for i, linha in enumerate(linhas):
-        r = _cabecalho_nivel(linha)
-        if r:
-            nivel, texto = r
-            headers.append((i, nivel, texto, _classificar_cabecalho(texto)))
+    url    = _get_setting('ollama_url', OLLAMA_URL_PADRAO).rstrip('/')
+    modelo = _get_setting('ollama_modelo', OLLAMA_MODELO_PADRAO)
+    nomes  = ', '.join(secoes)
 
-    target_line = target_level = target_idx = None
-    for idx, (i, nivel, texto, chave) in enumerate(headers):
-        if chave == secao_key:
-            target_line, target_level, target_idx = i, nivel, idx
-            break
+    prompt = (
+        'Você recebe abaixo o texto (Markdown) de um artigo científico. '
+        f'Localize onde começa o CORPO de cada uma destas seções: {nomes}.\n'
+        'Para cada seção que encontrar, copie EXATAMENTE (sem parafrasear, '
+        'sem resumir) a primeira frase do conteúdo da seção — não o título/'
+        'cabeçalho, o texto logo depois dele. Se não encontrar uma seção, '
+        'simplesmente não a inclua na resposta.\n'
+        'Responda apenas com um objeto JSON no formato '
+        '{"nome_da_secao": "trecho inicial literal"}.\n\n'
+        f'TEXTO:\n{md_texto[:15000]}'
+    )
+    payload = {
+        'model': modelo,
+        'prompt': prompt,
+        'format': 'json',
+        'stream': False,
+        'options': {'temperature': 0, 'num_ctx': 8192},
+    }
 
-    if target_line is None:
-        return None
+    try:
+        req = urllib.request.Request(
+            f'{url}/api/generate',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_S) as resp:
+            corpo = json.loads(resp.read().decode('utf-8'))
+        marcadores = json.loads(corpo.get('response', '{}'))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return {}
 
-    end_line = len(linhas)
-    for i, nivel, texto, chave in headers[target_idx + 1:]:
-        if nivel <= target_level:
-            end_line = i
-            break
+    if not isinstance(marcadores, dict):
+        return {}
+    return {k: v for k, v in marcadores.items()
+            if k in secoes and isinstance(v, str) and v.strip()}
 
-    result = '\n'.join(linhas[target_line + 1:end_line]).strip()
-    return result or None
 
+def _fallback_secoes_ia(md, secoes_faltando):
+    """Tenta recuperar seções que o regex/fuzzy não encontraram, via IA local.
+
+    Retorna (partes, encontradas) no mesmo formato de _extrair_secoes.
+    Localiza no texto original o trecho literal apontado pela IA; seções
+    cujo trecho não é encontrado (IA "inventou" ou parafraseou) são ignoradas
+    e continuam no fallback antigo.
+    """
+    marcadores = _extrair_secoes_ia(md, secoes_faltando)
+    if not marcadores:
+        return [], []
+
+    # Posições de cabeçalhos Markdown reais, para não deixar o conteúdo de
+    # uma seção vazar para dentro do título da seção seguinte.
+    pos_cabecalhos = [m.start() for m in re.finditer(r'^#{1,6}\s+.+$', md, re.MULTILINE)]
+
+    posicoes = []
+    for secao, trecho in marcadores.items():
+        trecho = trecho.strip()
+        idx = md.find(trecho)
+        if idx < 0:
+            idx = md.lower().find(trecho.lower())
+        if idx >= 0:
+            posicoes.append((idx, secao))
+    posicoes.sort()
+
+    partes, encontradas = [], []
+    for i, (idx, secao) in enumerate(posicoes):
+        fim = posicoes[i + 1][0] if i + 1 < len(posicoes) else len(md)
+        prox_cabecalho = next((p for p in pos_cabecalhos if p > idx), len(md))
+        fim = min(fim, prox_cabecalho)
+        conteudo = md[idx:fim].strip()
+        if conteudo:
+            partes.append(f'[{secao.upper()} — via IA local]\n{conteudo}')
+            encontradas.append(secao)
+    return partes, encontradas
 
 
 def _fragmentar_blocos(blocos, max_kb):
@@ -747,17 +782,11 @@ def _bind_dnd_widget(widget, callback):
 
 # ══════════════════════════════════════ cabeçalho compartilhado ═══════════════════
 
-def _header(parent, bg, txt_color, titulo, hover_color=None, back_cmd=None):
+def _header(parent, bg, txt_color, titulo):
     hdr = ctk.CTkFrame(parent, fg_color=bg, corner_radius=0, height=52)
     hdr.pack(fill='x')
     hdr.pack_propagate(False)
     ctk.CTkFrame(parent, fg_color=DIVIDER, height=1, corner_radius=0).pack(fill='x')
-
-    if back_cmd is not None:
-        ctk.CTkButton(hdr, text='← Início', width=88,
-                     fg_color='transparent', hover_color=hover_color or bg,
-                     text_color=txt_color, font=_font(13),
-                     command=back_cmd).pack(side='left', padx=14, pady=10)
 
     ctk.CTkLabel(hdr, text=titulo, font=_font(15, 'bold'),
                  text_color=txt_color).pack(side='left', padx=14, pady=10)
@@ -784,17 +813,50 @@ class SettingsDialog(ctk.CTkToplevel):
                      text_color=TEXT_PRI).pack(padx=20, pady=(16, 4), anchor='w')
         _sep(frame, pady=(0, 10))
 
-        # ── Arquivo de saída ──────────────────────────────────────────────────
-        ctk.CTkLabel(frame, text='Arquivo de saída',
-                     font=_font(12, 'bold'), text_color=TEXT_SEC
-                     ).pack(padx=20, pady=(6, 6), anchor='w')
+        tabs = ctk.CTkTabview(
+            frame, width=420, height=380, fg_color=BG_CARD,
+            segmented_button_fg_color=BG_PANEL,
+            segmented_button_selected_color=GREEN,
+            segmented_button_selected_hover_color=GREEN_HOV,
+            text_color=TEXT_PRI)
+        tabs.pack(fill='both', expand=True, padx=20, pady=(0, 12))
+        aba_geral = tabs.add('Geral')
+        aba_ia    = tabs.add('IA local (Ollama)')
 
-        row_nome = ctk.CTkFrame(frame, fg_color='transparent')
-        row_nome.pack(fill='x', padx=20, pady=(0, 4))
+        self._build_aba_geral(aba_geral, cfg)
+        self._build_aba_ia(aba_ia, cfg)
+
+        _sep(frame, pady=(0, 12))
+
+        ctk.CTkButton(frame, text='Fechar', width=100, height=32,
+                     fg_color=GREEN, hover_color=GREEN_HOV,
+                     text_color='white', font=_font(13, 'bold'),
+                     command=self._fechar).pack(pady=(0, 16))
+
+        self.update_idletasks()
+        self.geometry('480x560')
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.after(50, self.grab_set)
+
+    # ── aba Geral ───────────────────────────────────────────────────────────
+
+    def _build_aba_geral(self, tab, cfg):
+        inner = ctk.CTkScrollableFrame(tab, fg_color='transparent')
+        inner.pack(fill='both', expand=True)
+
+        # ── Arquivo de saída ──────────────────────────────────────────────────
+        ctk.CTkLabel(inner, text='Arquivo de saída',
+                     font=_font(12, 'bold'), text_color=TEXT_SEC
+                     ).pack(pady=(6, 6), anchor='w')
+
+        row_nome = ctk.CTkFrame(inner, fg_color='transparent')
+        row_nome.pack(fill='x', pady=(0, 4))
         ctk.CTkLabel(row_nome, text='Nome base dos fragmentos:',
                      font=_font(12), text_color=TEXT_PRI,
-                     width=200, anchor='w').pack(side='left')
-        self._entry_nome = ctk.CTkEntry(row_nome, width=180, height=30,
+                     width=190, anchor='w').pack(side='left')
+        self._entry_nome = ctk.CTkEntry(row_nome, width=170, height=30,
                                          font=_font(13),
                                          placeholder_text='ex: minha_extracao')
         self._entry_nome.pack(side='left')
@@ -802,22 +864,22 @@ class SettingsDialog(ctk.CTkToplevel):
         if nome_salvo:
             self._entry_nome.insert(0, nome_salvo)
 
-        ctk.CTkLabel(frame,
+        ctk.CTkLabel(inner,
                      text='Atualizado automaticamente com o nome da pasta selecionada.',
                      font=_font(11), text_color=TEXT_SEC
-                     ).pack(padx=20, pady=(0, 12), anchor='w')
+                     ).pack(pady=(0, 12), anchor='w')
 
-        _sep(frame, pady=(0, 10))
+        _sep(inner, pady=(0, 10))
 
         # ── Motores de extração ───────────────────────────────────────────────
-        row_ocr_hdr = ctk.CTkFrame(frame, fg_color='transparent')
-        row_ocr_hdr.pack(fill='x', padx=20, pady=(6, 6))
+        row_ocr_hdr = ctk.CTkFrame(inner, fg_color='transparent')
+        row_ocr_hdr.pack(fill='x', pady=(6, 6))
         ctk.CTkLabel(row_ocr_hdr, text='Motores de extração',
                      font=_font(12, 'bold'), text_color=TEXT_SEC,
                      anchor='w').pack(side='left')
 
-        row_ocr = ctk.CTkFrame(frame, fg_color='transparent')
-        row_ocr.pack(fill='x', padx=20, pady=(0, 4))
+        row_ocr = ctk.CTkFrame(inner, fg_color='transparent')
+        row_ocr.pack(fill='x', pady=(0, 4))
         self._var_ocr = ctk.BooleanVar(value=cfg.get('usar_ocr', True))
         ctk.CTkCheckBox(row_ocr,
                         text='Processar PDFs escaneados com OCR',
@@ -833,51 +895,239 @@ class SettingsDialog(ctk.CTkToplevel):
                       command=self._ajuda_ocr
                       ).pack(side='left', padx=(8, 0))
 
-        ctk.CTkLabel(frame,
+        ctk.CTkLabel(inner,
                      text='Requer docling instalado. PDFs escaneados são imagens '
                           'sem texto digital.',
-                     font=_font(11), text_color=TEXT_SEC, wraplength=380
-                     ).pack(padx=20, pady=(0, 12), anchor='w')
+                     font=_font(11), text_color=TEXT_SEC, wraplength=340
+                     ).pack(pady=(0, 12), anchor='w')
 
-        _sep(frame, pady=(0, 10))
+        _sep(inner, pady=(0, 10))
 
         # ── Ao concluir ───────────────────────────────────────────────────────
-        ctk.CTkLabel(frame, text='Ao concluir a extração',
+        ctk.CTkLabel(inner, text='Ao concluir a extração',
                      font=_font(12, 'bold'), text_color=TEXT_SEC
-                     ).pack(padx=20, pady=(6, 6), anchor='w')
+                     ).pack(pady=(6, 6), anchor='w')
 
         self._var_resumo = ctk.BooleanVar(value=cfg.get('mostrar_resumo', True))
-        ctk.CTkCheckBox(frame,
+        ctk.CTkCheckBox(inner,
                         text='Mostrar resumo de resultados ao terminar',
                         variable=self._var_resumo,
                         font=_font(13), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
-                        ).pack(anchor='w', padx=20, pady=(0, 8))
+                        ).pack(anchor='w', pady=(0, 8))
 
         self._var_pasta = ctk.BooleanVar(value=cfg.get('perguntar_abrir_pasta', True))
-        ctk.CTkCheckBox(frame,
+        ctk.CTkCheckBox(inner,
                         text='Perguntar se deseja abrir a pasta ao terminar',
                         variable=self._var_pasta,
                         font=_font(13), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
-                        ).pack(anchor='w', padx=20, pady=(0, 14))
+                        ).pack(anchor='w', pady=(0, 8))
 
-        _sep(frame, pady=(0, 12))
+    # ── aba IA local ────────────────────────────────────────────────────────
 
-        ctk.CTkButton(frame, text='Fechar', width=100, height=32,
-                     fg_color=GREEN, hover_color=GREEN_HOV,
-                     text_color='white', font=_font(13, 'bold'),
-                     command=self._fechar).pack(pady=(0, 16))
+    def _build_aba_ia(self, tab, cfg):
+        inner = ctk.CTkScrollableFrame(tab, fg_color='transparent')
+        inner.pack(fill='both', expand=True)
 
-        self.update_idletasks()
-        h = self.winfo_reqheight() + 20
-        self.geometry(f'460x{max(h, 300)}')
-        self.deiconify()
-        self.lift()
-        self.focus_force()
-        self.after(50, self.grab_set)
+        ctk.CTkLabel(inner, text='O que é isso?',
+                     font=_font(12, 'bold'), text_color=TEXT_SEC
+                     ).pack(pady=(6, 4), anchor='w')
+        ctk.CTkLabel(inner,
+                     text='Ollama roda modelos de IA no seu computador, sem mandar '
+                          'nada pra internet. O Excerpta usa isso só como reforço: '
+                          'quando o regex/fuzzy não acha alguma seção do artigo, '
+                          'pergunta pro modelo local onde ela começa, antes de cair '
+                          'no fallback padrão.',
+                     font=_font(11), text_color=TEXT_SEC, wraplength=340,
+                     justify='left'
+                     ).pack(pady=(0, 12), anchor='w')
+
+        _sep(inner, pady=(0, 10))
+
+        self._var_ia_local = ctk.BooleanVar(value=cfg.get('usar_ia_local', False))
+        ctk.CTkCheckBox(inner,
+                        text='Usar IA local (Ollama) quando seções não são encontradas',
+                        variable=self._var_ia_local,
+                        command=self._on_ia_local_toggle,
+                        font=_font(13), checkmark_color='white',
+                        fg_color=GREEN, hover_color=GREEN_HOV,
+                        border_color=GRAY_BORD
+                        ).pack(anchor='w', pady=(6, 4))
+        ctk.CTkLabel(inner,
+                     text='Desligado por padrão. Se o Ollama não responder, o '
+                          'Excerpta usa o fallback normal sem travar.',
+                     font=_font(11), text_color=TEXT_SEC, wraplength=340
+                     ).pack(pady=(0, 8), anchor='w')
+
+        self._row_ollama_fields = ctk.CTkFrame(inner, fg_color='transparent')
+        self._row_ollama_fields.pack(fill='x', pady=(0, 6))
+
+        row_url = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
+        row_url.pack(fill='x', pady=(0, 6))
+        ctk.CTkLabel(row_url, text='Servidor:', font=_font(12),
+                     text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
+        self._entry_ollama_url = ctk.CTkEntry(row_url, width=220, height=30,
+                                               font=_font(12))
+        self._entry_ollama_url.insert(0, cfg.get('ollama_url', OLLAMA_URL_PADRAO))
+        self._entry_ollama_url.pack(side='left')
+
+        row_modelo = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
+        row_modelo.pack(fill='x')
+        ctk.CTkLabel(row_modelo, text='Modelo:', font=_font(12),
+                     text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
+        self._entry_ollama_modelo = ctk.CTkEntry(row_modelo, width=220, height=30,
+                                                  font=_font(12))
+        self._entry_ollama_modelo.insert(0, cfg.get('ollama_modelo', OLLAMA_MODELO_PADRAO))
+        self._entry_ollama_modelo.pack(side='left')
+
+        row_status = ctk.CTkFrame(inner, fg_color='transparent')
+        row_status.pack(fill='x', pady=(6, 0))
+        ctk.CTkButton(row_status, text='Verificar conexão', width=140, height=28,
+                      fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                      text_color=TEXT_PRI, font=_font(12),
+                      border_width=1, border_color=GRAY_BORD,
+                      command=self._verificar_ollama
+                      ).pack(side='left')
+        self._lbl_status_ollama = ctk.CTkLabel(row_status, text='', font=_font(12),
+                                                text_color=TEXT_SEC)
+        self._lbl_status_ollama.pack(side='left', padx=(10, 0))
+
+        self._on_ia_local_toggle()
+
+        _sep(inner, pady=(12, 10))
+
+        ctk.CTkLabel(inner, text='Não tem o Ollama instalado?',
+                     font=_font(12, 'bold'), text_color=TEXT_SEC
+                     ).pack(pady=(0, 6), anchor='w')
+
+        if sys.platform.startswith('linux'):
+            ctk.CTkLabel(inner,
+                         text='Roda o instalador oficial (ollama.com/install.sh) '
+                              'com log ao vivo, direto por aqui. Pode pedir senha '
+                              'de administrador no processo.',
+                         font=_font(11), text_color=TEXT_SEC, wraplength=340
+                         ).pack(pady=(0, 8), anchor='w')
+            ctk.CTkButton(inner, text='Instalar Ollama', width=150, height=30,
+                         fg_color=GREEN, hover_color=GREEN_HOV,
+                         text_color='white', font=_font(12, 'bold'),
+                         command=self._confirmar_instalar_ollama
+                         ).pack(anchor='w', pady=(0, 12))
+        else:
+            ctk.CTkLabel(inner,
+                         text='Baixe o instalador oficial pro seu sistema em '
+                              'ollama.com.',
+                         font=_font(11), text_color=TEXT_SEC, wraplength=340
+                         ).pack(pady=(0, 8), anchor='w')
+            ctk.CTkButton(inner, text='Abrir página de download', width=180, height=30,
+                         fg_color=GREEN, hover_color=GREEN_HOV,
+                         text_color='white', font=_font(12, 'bold'),
+                         command=lambda: webbrowser.open(OLLAMA_DOWNLOAD_URL)
+                         ).pack(anchor='w', pady=(0, 12))
+
+    def _on_ia_local_toggle(self):
+        estado = 'normal' if self._var_ia_local.get() else 'disabled'
+        self._entry_ollama_url.configure(state=estado)
+        self._entry_ollama_modelo.configure(state=estado)
+
+    def _verificar_ollama(self):
+        self._lbl_status_ollama.configure(text='verificando…', text_color=TEXT_SEC)
+        url = self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO
+
+        def _checar():
+            try:
+                req = urllib.request.Request(f'{url.rstrip("/")}/api/tags')
+                with urllib.request.urlopen(req, timeout=4):
+                    ok = True
+            except Exception:
+                ok = False
+            self.after(0, lambda: self._lbl_status_ollama.configure(
+                text='✓ Ollama respondendo' if ok else '✗ Não consegui conectar',
+                text_color=C_OK if ok else C_ERR))
+
+        threading.Thread(target=_checar, daemon=True).start()
+
+    def _confirmar_instalar_ollama(self):
+        if not messagebox.askyesno(
+                'Instalar Ollama',
+                'Isso vai rodar o instalador oficial num terminal embutido:\n\n'
+                f'  {OLLAMA_INSTALL_CMD}\n\n'
+                'O script pode pedir a senha de administrador (sudo) — se travar '
+                'pedindo senha, cancele e rode o comando acima manualmente num '
+                'terminal.\n\nContinuar?'):
+            return
+        self._instalar_ollama_gui()
+
+    def _instalar_ollama_gui(self):
+        win = ctk.CTkToplevel(self)
+        win.title('Instalando Ollama…')
+        win.resizable(False, False)
+        win.withdraw()
+        win.transient(self)
+
+        fr = ctk.CTkFrame(win, fg_color=BG_WINDOW)
+        fr.pack(fill='both', expand=True)
+
+        ctk.CTkLabel(fr, text='Instalando Ollama…', font=_font(13, 'bold'),
+                     text_color=TEXT_PRI).pack(padx=20, pady=(16, 8), anchor='w')
+
+        log = ctk.CTkTextbox(fr, width=440, height=220, font=('TkFixedFont', 10))
+        log.pack(padx=20, pady=(0, 12))
+        log.configure(state='disabled')
+
+        def _log(txt):
+            log.configure(state='normal')
+            log.insert('end', txt + '\n')
+            log.see('end')
+            log.configure(state='disabled')
+
+        btn_fechar = ctk.CTkButton(fr, text='Fechar', width=90, height=30,
+                                    fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                                    text_color=TEXT_PRI, font=_font(12),
+                                    state='disabled', command=win.destroy)
+        btn_fechar.pack(pady=(0, 16))
+
+        def _run():
+            inicio = time.time()
+            code = 1
+            try:
+                proc = subprocess.Popen(
+                    ['sh', '-c', OLLAMA_INSTALL_CMD],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                for linha in proc.stdout:
+                    win.after(0, lambda l=linha: _log(l.rstrip('\n')))
+                    if time.time() - inicio > 600:
+                        proc.kill()
+                        win.after(0, lambda: _log(
+                            '\n✗ Tempo limite excedido (10 min). Abortado.'))
+                        break
+                code = proc.wait()
+            except Exception as exc:
+                win.after(0, lambda e=exc: _log(f'Erro: {e}'))
+
+            def _fim():
+                if code == 0:
+                    _log('\n✓ Instalação concluída. Use "Verificar conexão" na '
+                         'aba anterior (pode levar alguns segundos pro serviço subir).')
+                else:
+                    _log('\n✗ Falha na instalação automática.')
+                    _log('Rode manualmente num terminal:')
+                    _log(f'  {OLLAMA_INSTALL_CMD}')
+                btn_fechar.configure(state='normal')
+            win.after(0, _fim)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        win.update_idletasks()
+        win.geometry('480x330')
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+        win.after(50, win.grab_set)
 
     def _ajuda_ocr(self):
         win = ctk.CTkToplevel(self)
@@ -927,6 +1177,9 @@ class SettingsDialog(ctk.CTkToplevel):
             'usar_ocr': self._var_ocr.get(),
             'mostrar_resumo': self._var_resumo.get(),
             'perguntar_abrir_pasta': self._var_pasta.get(),
+            'usar_ia_local': self._var_ia_local.get(),
+            'ollama_url': self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO,
+            'ollama_modelo': self._entry_ollama_modelo.get().strip() or OLLAMA_MODELO_PADRAO,
         })
         self.destroy()
 
@@ -1644,11 +1897,12 @@ class Etapa3Frame(ctk.CTkFrame):
         self._prog3.set(0)
         self._prog3.pack(side='left', padx=(10, 0))
         usar_ocr = _get_setting('usar_ocr', True)
+        usar_ia_local = _get_setting('usar_ia_local', False)
         threading.Thread(
             target=self._extrair_worker,
             args=(prontos, path, secoes_cfg, fallback_cfg, incluir_supl,
                   usar_ocr, fragmentar, frag_nome, frag_kb, fmt,
-                  dict(getattr(self, '_tipos_pdf', {}))),
+                  dict(getattr(self, '_tipos_pdf', {})), usar_ia_local),
             daemon=True).start()
 
     def _cancelar_extracao(self):
@@ -1658,7 +1912,7 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _extrair_worker(self, artigos, path_saida, secoes_cfg, fallback_cfg,
                         incluir_supl, usar_ocr, fragmentar, frag_nome, frag_kb, fmt='txt',
-                        tipos_pdf=None):
+                        tipos_pdf=None, usar_ia_local=False):
         tipos_pdf = tipos_pdf or {}
         blocos = []
         stats  = {'completos': 0, 'adaptados': 0, 'reviews': 0,
@@ -1766,6 +2020,17 @@ class Etapa3Frame(ctk.CTkFrame):
                         # Mudança 3: extração com suporte a compostos
                         encontradas, nao_encontradas, partes_sec = _extrair_secoes(md, secoes_cfg)
                         partes.extend(partes_sec)
+
+                        # Fallback via IA local (Ollama): só roda se o regex/fuzzy
+                        # deixou seções sem encontrar e a opção está ligada nas
+                        # configurações. Falha silenciosa -> segue pro fallback antigo.
+                        if nao_encontradas and usar_ia_local:
+                            partes_ia, encontradas_ia = _fallback_secoes_ia(md, nao_encontradas)
+                            if encontradas_ia:
+                                partes.extend(partes_ia)
+                                encontradas = encontradas + encontradas_ia
+                                nao_encontradas = [s for s in nao_encontradas
+                                                    if s not in encontradas_ia]
 
                         # Mudança 1: fallback = artigo completo menos seções já extraídas
                         if nao_encontradas and fallback_cfg:
