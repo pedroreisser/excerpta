@@ -23,7 +23,7 @@ Selecione uma pasta com PDFs, escolha quais seções quer extrair (abstract, mé
 python3 iniciar_extrator.py
 ```
 
-Na primeira execução o programa pergunta se deseja instalar as dependências automaticamente. Não é necessário ser administrador.
+Na primeira execução o programa instala automaticamente as dependências obrigatórias (rápido, ~50 MB) e já abre o Excerpta. Não é necessário ser administrador.
 
 ---
 
@@ -36,7 +36,7 @@ Na primeira execução o programa pergunta se deseja instalar as dependências a
 | `tkinterdnd2` | pequeno | Drag-and-drop de arquivos |
 | `docling` *(opcional)* | ~2 GB | OCR para PDFs escaneados |
 
-O `docling` só é necessário para PDFs sem texto nativo (escaneados). A instalação demora 10–20 min.
+O `docling` só é necessário para PDFs sem texto nativo (escaneados). Não é instalado pelo launcher — instale quando precisar em **Configurações → Geral**, dentro do próprio Excerpta (botão "Instalar suporte a OCR"). O mesmo vale para a IA local opcional (Ollama), disponível em **Configurações → IA local (Ollama)**.
 
 ---
 

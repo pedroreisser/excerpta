@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import subprocess
+import shutil
 import time
 import urllib.request
 import urllib.error
@@ -94,6 +95,13 @@ OLLAMA_MODELO_PADRAO = 'qwen2.5:7b-instruct'
 OLLAMA_TIMEOUT_S     = 25
 OLLAMA_INSTALL_CMD   = 'curl -fsSL https://ollama.com/install.sh | sh'
 OLLAMA_DOWNLOAD_URL  = 'https://ollama.com/download'
+
+
+def _pip_flags():
+    """Flags para pip que evitam precisar de permissão de administrador."""
+    if sys.platform == 'win32':
+        return ['--user']
+    return ['--break-system-packages']
 
 # Palavras fortes: inequívocas, verificadas por "começa com" (degrau 1)
 _SECAO_STRONG_PREFIXES = {
@@ -921,6 +929,25 @@ class SettingsDialog(ctk.CTkToplevel):
                      font=_font(11), text_color=TEXT_SEC, wraplength=340
                      ).pack(pady=(0, 12), anchor='w')
 
+        if not DOCLING_OK:
+            row_docling = ctk.CTkFrame(inner, fg_color='transparent')
+            row_docling.pack(fill='x', pady=(0, 4))
+            ctk.CTkLabel(row_docling, text='✗ docling não instalado',
+                         font=_font(12), text_color=C_ERR).pack(side='left')
+            ctk.CTkButton(row_docling, text='Instalar suporte a OCR',
+                         width=170, height=28,
+                         fg_color=GREEN, hover_color=GREEN_HOV,
+                         text_color='white', font=_font(12, 'bold'),
+                         command=self._confirmar_instalar_docling
+                         ).pack(side='left', padx=(10, 0))
+            ctk.CTkLabel(inner, text='≈2 GB, 10-20 min. Baixado uma única vez.',
+                         font=_font(11), text_color=TEXT_SEC
+                         ).pack(pady=(4, 12), anchor='w')
+        else:
+            ctk.CTkLabel(inner, text='✓ docling instalado',
+                         font=_font(12), text_color=C_OK
+                         ).pack(pady=(0, 12), anchor='w')
+
         _sep(inner, pady=(0, 10))
 
         # ── Ao concluir ───────────────────────────────────────────────────────
@@ -964,6 +991,15 @@ class SettingsDialog(ctk.CTkToplevel):
                      font=_font(11), text_color=TEXT_SEC, wraplength=340,
                      justify='left'
                      ).pack(pady=(0, 12), anchor='w')
+
+        if shutil.which('ollama'):
+            ctk.CTkLabel(inner, text='✓ Ollama instalado',
+                         font=_font(12), text_color=C_OK
+                         ).pack(pady=(0, 12), anchor='w')
+        else:
+            ctk.CTkLabel(inner, text='✗ Ollama não instalado',
+                         font=_font(12), text_color=C_ERR
+                         ).pack(pady=(0, 12), anchor='w')
 
         _sep(inner, pady=(0, 10))
 
@@ -1137,6 +1173,81 @@ class SettingsDialog(ctk.CTkToplevel):
                     _log('\n✗ Falha na instalação automática.')
                     _log('Rode manualmente num terminal:')
                     _log(f'  {OLLAMA_INSTALL_CMD}')
+                btn_fechar.configure(state='normal')
+            win.after(0, _fim)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        win.update_idletasks()
+        win.geometry('480x330')
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+        win.after(50, win.grab_set)
+
+    def _confirmar_instalar_docling(self):
+        if not messagebox.askyesno(
+                'Instalar suporte a OCR',
+                'Isso vai instalar o pacote "docling" via pip (≈2 GB, pode '
+                'levar 10-20 min dependendo da conexão).\n\nContinuar?'):
+            return
+        self._instalar_docling_gui()
+
+    def _instalar_docling_gui(self):
+        win = ctk.CTkToplevel(self)
+        win.title('Instalando suporte a OCR…')
+        win.resizable(False, False)
+        win.withdraw()
+        win.transient(self)
+
+        fr = ctk.CTkFrame(win, fg_color=BG_WINDOW)
+        fr.pack(fill='both', expand=True)
+
+        ctk.CTkLabel(fr, text='Instalando docling (OCR)…', font=_font(13, 'bold'),
+                     text_color=TEXT_PRI).pack(padx=20, pady=(16, 8), anchor='w')
+
+        log = ctk.CTkTextbox(fr, width=440, height=220, font=('TkFixedFont', 10))
+        log.pack(padx=20, pady=(0, 12))
+        log.configure(state='disabled')
+
+        def _log(txt):
+            log.configure(state='normal')
+            log.insert('end', txt + '\n')
+            log.see('end')
+            log.configure(state='disabled')
+
+        btn_fechar = ctk.CTkButton(fr, text='Fechar', width=90, height=30,
+                                    fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                                    text_color=TEXT_PRI, font=_font(12),
+                                    state='disabled', command=win.destroy)
+        btn_fechar.pack(pady=(0, 16))
+
+        def _run():
+            _log('> pip install docling')
+            res = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--upgrade', 'docling']
+                + _pip_flags(),
+                capture_output=True, text=True
+            )
+            ok = res.returncode == 0
+            if not ok:
+                res2 = subprocess.run(
+                    [sys.executable, '-m', 'pip', 'install', '--upgrade', 'docling'],
+                    capture_output=True, text=True
+                )
+                ok = res2.returncode == 0
+                if not ok:
+                    win.after(0, lambda: _log(
+                        f'✗ Falha: {(res.stderr or res2.stderr).strip()[:400]}'))
+
+            def _fim():
+                if ok:
+                    _log('\n✓ docling instalado. Feche e reabra o Excerpta para '
+                         'usar o OCR.')
+                else:
+                    _log('\nRode manualmente num terminal:')
+                    _log('  pip install docling' +
+                         ('' if sys.platform == 'win32' else ' --break-system-packages'))
                 btn_fechar.configure(state='normal')
             win.after(0, _fim)
 

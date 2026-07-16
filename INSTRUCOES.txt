@@ -21,12 +21,14 @@ Linux/Mac:
 
 NA PRIMEIRA EXECUÇÃO
 ────────────────────
-Será perguntado se deseja instalar as dependências.
-  • Dependências obrigatórias (pequenas, ~50 MB): pymupdf4llm, customtkinter, tkinterdnd2
-  • Suporte a OCR (opcional, ~2 GB, 10–20 min): docling
-    → necessário apenas para PDFs escaneados (sem texto nativo)
+O programa instala sozinho as dependências obrigatórias (pequenas, ~50 MB:
+pymupdf4llm, customtkinter, tkinterdnd2) e já abre o Excerpta. Nenhuma
+instalação requer permissão de administrador.
 
-Nenhuma instalação requer permissão de administrador.
+Suporte a OCR (docling, ~2 GB, 10–20 min, necessário só para PDFs escaneados
+sem texto nativo) e IA local (Ollama, opcional) NÃO são instalados nesta
+etapa — instale quando precisar dentro do próprio Excerpta, em
+"⚙ Configurações".
 
 
 COMO USAR
