@@ -11,7 +11,7 @@ REQUISITO: Python 3.9 ou superior
 COMO INICIAR
 ────────────
 Windows:
-  Dê duplo clique em "iniciar.bat"
+  Dê duplo clique em "Instalar dependências (Windows 11).bat"
   O programa instala as dependências automaticamente na primeira vez.
 
 Linux/Mac:

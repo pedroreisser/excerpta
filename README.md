@@ -16,7 +16,7 @@ Selecione uma pasta com PDFs, escolha quais seções quer extrair (abstract, mé
 
 ## Como iniciar
 
-**Windows** — dê duplo clique em `iniciar.bat`
+**Windows** — dê duplo clique em `Instalar dependências (Windows 11).bat`
 
 **Linux/Mac** — execute no terminal:
 ```bash
@@ -74,7 +74,7 @@ Artigos em que uma seção não é encontrada aparecem no resultado como **compl
 |---|---|
 | `excerpta.py` | Aplicação principal (interface e lógica de extração) |
 | `iniciar_extrator.py` | Launcher: instala dependências e abre a aplicação |
-| `iniciar.bat` | Entrada para Windows (chama o launcher) |
+| `Instalar dependências (Windows 11).bat` | Entrada para Windows (chama o launcher) |
 | `INSTRUCOES.txt` | Instruções para usuários finais |
 
 Arquivos gerados localmente (não versionados):
