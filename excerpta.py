@@ -1332,35 +1332,53 @@ class StatsWindow(ctk.CTkToplevel):
         ignorados = stats.get('ignorados', 0)
         erros     = stats.get('erros', 0)
 
+        extraidos     = completos + adaptados + reviews
+        nao_extraidos = ignorados + erros
+
         frame = ctk.CTkFrame(self, fg_color=BG_WINDOW)
         frame.pack(fill='both', expand=True)
 
-        # Cabeçalho
+        # Cabeçalho — diz de cara COMO foi (quantos saíram com texto), não só
+        # "processados". Ex.: "39 de 42 artigos extraídos".
         hdr_f = ctk.CTkFrame(frame, fg_color=GREEN_HDR, corner_radius=0, height=52)
         hdr_f.pack(fill='x')
         hdr_f.pack_propagate(False)
-        if fragmentado:
-            hdr_txt = f'✓  {total} artigo(s) → {n_frags} arquivo(s)'
+        if nao_extraidos == 0:
+            hdr_txt = f'✓  Todos os {total} artigos foram extraídos'
         else:
-            hdr_txt = f'✓  {total} artigo(s) processado(s)'
+            hdr_txt = f'✓  {extraidos} de {total} artigos extraídos'
         ctk.CTkLabel(hdr_f, text=hdr_txt, font=_font(14, 'bold'),
                      text_color=GREEN_TXT).pack(side='left', padx=16, pady=12)
         ctk.CTkFrame(frame, fg_color=DIVIDER, height=1, corner_radius=0).pack(fill='x')
 
-        body = ctk.CTkFrame(frame, fg_color='transparent')
-        body.pack(fill='x', padx=20, pady=(14, 6))
+        # Frase-resumo em linguagem simples, logo abaixo do cabeçalho.
+        if nao_extraidos == 0:
+            resumo_txt = 'Todos os artigos saíram com texto.'
+        elif extraidos == 0:
+            resumo_txt = 'Nenhum artigo pôde ser extraído — veja abaixo o motivo.'
+        else:
+            resumo_txt = (f'{extraidos} artigos saíram com texto e {nao_extraidos} não — '
+                          f'veja abaixo o que aconteceu.')
+        ctk.CTkLabel(frame, text=resumo_txt, font=_font(12), text_color=TEXT_SEC,
+                     wraplength=410, justify='left', anchor='w').pack(
+                         fill='x', padx=20, pady=(12, 0))
 
+        body = ctk.CTkFrame(frame, fg_color='transparent')
+        body.pack(fill='x', padx=20, pady=(8, 6))
+
+        # Rótulos em linguagem direta. Mantém "Complementados automaticamente"
+        # (termo já adotado, explicado na nota abaixo).
         rows = []
         if completos > 0:
-            rows.append((C_OK,    '✓', str(completos), 'Seções encontradas com sucesso'))
+            rows.append((C_OK,    '✓', str(completos), 'Seções pedidas encontradas'))
         if adaptados > 0:
             rows.append((C_WARN,  '≈', str(adaptados), 'Complementados automaticamente'))
         if reviews > 0:
-            rows.append((ACCENT,  '▤', str(reviews),   'Reviews (entregues completos)'))
+            rows.append((ACCENT,  '▤', str(reviews),   'Artigos de revisão (texto inteiro)'))
         if ignorados > 0:
-            rows.append((GRAY_TEXT,'○', str(ignorados), 'Ignorados (suplementar / sem OCR)'))
+            rows.append((GRAY_TEXT,'○', str(ignorados), 'Pulados (suplementar ou PDF sem texto)'))
         if erros > 0:
-            rows.append((C_ERR,   '✗', str(erros),     'Com erros'))
+            rows.append((C_ERR,   '✗', str(erros),     'Falharam (não foi possível ler)'))
 
         for cor, icone, count, desc in rows:
             r = ctk.CTkFrame(body, fg_color='transparent')
