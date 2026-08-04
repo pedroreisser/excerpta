@@ -16,14 +16,17 @@ Selecione uma pasta com PDFs — ou importe direto do Zotero — escolha quais s
 
 ## Como iniciar
 
-**Windows** — dê duplo clique em `Instalar dependências (Windows 11).bat`
+**Só no Windows, uma única vez** — dê duplo clique em `Instalar dependências (Windows 11).bat`. Ele instala o Python (se faltar) e as bibliotecas, e **não** abre o programa.
 
-**Linux/Mac** — execute no terminal:
+**Para abrir o Excerpta, em qualquer sistema** — `iniciar.py`:
+
 ```bash
 python3 iniciar.py
 ```
 
-Na primeira execução o programa instala automaticamente as dependências obrigatórias (rápido, ~50 MB) e já abre o Excerpta. Não é necessário ser administrador.
+No Windows, duplo clique no `iniciar.py` já basta.
+
+O `iniciar.py` também instala o que estiver faltando, então no Linux/Mac ele resolve tudo sozinho na primeira execução (~50 MB). Não é necessário ser administrador.
 
 ---
 
@@ -84,8 +87,8 @@ Na raiz fica só o que o usuário precisa para instalar e abrir o programa:
 
 | Arquivo | Descrição |
 |---|---|
-| `iniciar.py` | Launcher: instala dependências e abre a aplicação |
-| `Instalar dependências (Windows 11).bat` | Entrada para Windows (chama o launcher) |
+| `iniciar.py` | Abre a aplicação (e instala o que faltar). É a entrada em todos os sistemas |
+| `Instalar dependências (Windows 11).bat` | Só prepara o Windows: Python + bibliotecas. Não abre o programa |
 | `INSTRUCOES.txt` | Instruções para usuários finais |
 | `README.md` | Este arquivo |
 

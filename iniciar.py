@@ -172,8 +172,20 @@ def _instalar_pacotes(pacotes, callback_log, callback_fim):
 
 # ── Interface gráfica ─────────────────────────────────────────────────────────
 
+def _python_gui():
+    """Interpretador que abre a janela do Excerpta.
+
+    No Windows é o pythonw.exe: o python.exe prende um console ao processo, e
+    o app fica com uma janela preta atrás dele.
+    """
+    if not IS_WIN:
+        return sys.executable
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return pythonw if os.path.isfile(pythonw) else sys.executable
+
+
 def _abrir_app():
-    subprocess.Popen([sys.executable, SCRIPT])
+    subprocess.Popen([_python_gui(), SCRIPT])
 
 
 def _instalar_gui(pacotes, root, depois_de_instalar):
@@ -290,7 +302,7 @@ def main_console():
 
     if not faltando:
         print("Tudo instalado. Abrindo Excerpta...")
-        subprocess.Popen([sys.executable, SCRIPT])
+        _abrir_app()
         return
 
     print("Dependências a instalar:")
@@ -326,10 +338,44 @@ def main_console():
             print(f"  pip install {e} --break-system-packages")
     else:
         print("\n✓ Instalação concluída! Abrindo Excerpta…")
-        subprocess.Popen([sys.executable, SCRIPT])
+        _abrir_app()
+
+
+def main_instalar():
+    """Instala as dependências e sai, sem abrir o programa.
+
+    Modo usado pelo .bat do Windows, que existe só para preparar a máquina.
+    Abrir o Excerpta é sempre pelo iniciar.py sem argumento, igual em todos os
+    sistemas — assim a lista de dependências vive num lugar só, aqui.
+    """
+    faltando = checar_faltando(DEPS_OBRIGATORIAS)
+    if not faltando:
+        print("Todas as dependencias ja estao instaladas.")
+        return 0
+
+    print("Instalando dependencias:")
+    for _, pacote in faltando:
+        print(f"  - {pacote}")
+    print()
+
+    erros = []
+    _instalar_pacotes(faltando, print, erros.extend)
+
+    if erros:
+        print(f"\nFalha ao instalar: {', '.join(erros)}")
+        print("Tente manualmente:")
+        for e in erros:
+            print(f"  pip install {e}" + ("" if IS_WIN else " --break-system-packages"))
+        return 1
+
+    print("\nDependencias instaladas.")
+    return 0
 
 
 if __name__ == "__main__":
+    # O .bat do Windows chama com --apenas-instalar: prepara e sai.
+    APENAS_INSTALAR = "--apenas-instalar" in sys.argv
+
     # Verificar versão do Python
     if sys.version_info < (3, 9):
         print(f"Excerpta requer Python 3.9+. Versão atual: {sys.version}")
@@ -341,6 +387,9 @@ if __name__ == "__main__":
     # instalando via apt/dnf/yum/zypper/pacman/apk conforme detectado.
     if IS_LINUX and not _garantir_tk_e_pip():
         sys.exit(1)
+
+    if APENAS_INSTALAR:
+        sys.exit(main_instalar())
 
     # Tentar GUI, cair em console se tkinter não estiver disponível
     try:
