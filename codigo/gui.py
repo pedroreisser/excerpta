@@ -36,8 +36,45 @@ def _pip_flags():
         return ['--user']
     return ['--break-system-packages']
 
+# ── Tipografia ────────────────────────────────────────────────────────────────
+# Pilha por plataforma: vence a primeira família instalada. Sem isso o Tk cai
+# calado numa fonte default sofrível quando a família não existe — a antiga
+# "Ubuntu Sans" fixa deixava o app com cara de legado em qualquer Windows.
+_PILHA_SO = {
+    'win32':  ('Segoe UI Variable Text', 'Segoe UI', 'Tahoma'),
+    'darwin': ('SF Pro Text', 'Helvetica Neue', 'Lucida Grande'),
+}
+_PILHA_FIM = ('Ubuntu Sans', 'Inter', 'Cantarell', 'Noto Sans', 'DejaVu Sans')
+
+F = 'TkDefaultFont'
+
+
+def resolver_fonte():
+    """Fixa F na primeira família instalada. Exige um root Tk já criado."""
+    global F
+    try:
+        from tkinter import font as tkfont
+        instaladas = {nome.lower() for nome in tkfont.families()}
+    except Exception:
+        return
+    for familia in _PILHA_SO.get(sys.platform, ()) + _PILHA_FIM:
+        if familia.lower() in instaladas:
+            F = familia
+            return
+
+
+# ── Escala de espaçamento e forma ─────────────────────────────────────────────
+# Múltiplos de 4. Padding fora desta escala destoa a olho nu, e era o que
+# acontecia com os valores soltos (9, 14, 28…) espalhados pelo arquivo.
+S1, S2, S3, S4, S5, S6 = 4, 8, 12, 16, 20, 24
+
+RAIO_CARD = 10          # cartões e a lista
+RAIO_CTRL = 8           # botões, campos
+RAIO_CHIP = 15          # chips de seção (pílula)
+ALT_CTRL  = 36          # altura padrão de botão e campo
+ALT_LINHA = 34          # altura de uma linha da lista de artigos
+
 # ── Paleta Zotero-inspirada (tema claro) ──────────────────────────────────────
-F           = "Ubuntu Sans"
 
 BG_WINDOW   = "#F3F4F6"
 BG_CARD     = "#FFFFFF"
@@ -61,10 +98,13 @@ GRAY_TEXT   = "#666C75"
 
 TEXT_PRI    = "#1F2328"
 TEXT_SEC    = "#6B7280"
+TEXT_OFF    = "#9CA3AF"   # desabilitado: apagado, mas ainda legível
 DIVIDER     = "#E2E4E8"
 
 C_OK        = "#2E7D4F"
 C_WARN      = "#B45309"
+C_WARN_LT   = "#FFF7ED"
+C_WARN_BORD = "#F0C48A"
 C_ERR       = "#B91C1C"
 
 _COR_PYMUPDF = ACCENT
@@ -95,6 +135,31 @@ def _sep(parent, pady=(0, 0)):
     return f
 
 
+# ── Colunas da lista de artigos ───────────────────────────────────────────────
+# Uma definição só, usada pelo cabeçalho e por cada linha — é o que mantém as
+# colunas alinhadas. Antes cada linha empilhava labels com pack(side='left'),
+# então a posição de cada campo variava conforme o tamanho do nome do arquivo.
+COL_LARGURAS = (26, None, 180, 120)      # None = coluna elástica
+COL_PADX     = ((S3, 0), (0, S3), (0, 0), (0, S3))   # idêntico nas duas pontas
+
+
+def _encurtar(nome, limite=64):
+    """Encurta pelo meio: o fim do nome carrega ano/autor e não pode sumir."""
+    if len(nome) <= limite:
+        return nome
+    corte = (limite - 1) // 2
+    return f'{nome[:corte]}…{nome[-(limite - 1 - corte):]}'
+
+
+def _montar_colunas(frame):
+    for i, largura in enumerate(COL_LARGURAS):
+        if largura is None:
+            frame.grid_columnconfigure(i, weight=1, minsize=140)
+        else:
+            frame.grid_columnconfigure(i, weight=0, minsize=largura)
+    frame.grid_rowconfigure(0, weight=1)
+
+
 # ── Histórico de pastas / arquivos recentes ───────────────────────────────────
 
 def _btn_recentes(parent, entry, chave, on_select):
@@ -105,7 +170,7 @@ def _btn_recentes(parent, entry, chave, on_select):
     def _abrir():
         dados = _ler_recentes()
         lista = dados.get(chave, [])
-        menu = tk.Menu(parent, tearoff=0, font=('Ubuntu Sans', 12))
+        menu = tk.Menu(parent, tearoff=0, font=(F, 12))
         if lista:
             for item in lista:
                 display = item if len(item) <= 60 else '…' + item[-57:]
@@ -881,7 +946,7 @@ class Etapa3Frame(ctk.CTkFrame):
 
         # ── Linha 0: inputs (pasta + IA + atalho direto) ──────────────────────
         cfg = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
-                           border_width=1, corner_radius=8)
+                           border_width=1, corner_radius=RAIO_CARD)
         cfg.grid(row=0, column=0, sticky='ew', pady=(0, 6))
 
         r1 = ctk.CTkFrame(cfg, fg_color='transparent')
@@ -919,7 +984,7 @@ class Etapa3Frame(ctk.CTkFrame):
 
         # ── Linha 1: seções a extrair ──────────────────────────────────────────
         sec_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
-                                border_width=1, corner_radius=8)
+                                border_width=1, corner_radius=RAIO_CARD)
         sec_card.grid(row=1, column=0, sticky='ew', pady=(0, 6))
         inner3 = ctk.CTkFrame(sec_card, fg_color='transparent')
         inner3.pack(fill='x', padx=14, pady=(10, 12))
@@ -929,7 +994,8 @@ class Etapa3Frame(ctk.CTkFrame):
         ctk.CTkLabel(row_hdr, text='Seções a extrair', font=_font(13, 'bold'),
                      text_color=TEXT_PRI, anchor='w').pack(side='left')
         self._btn_tudo_chip = ctk.CTkButton(
-            row_hdr, text='Artigo completo', width=140, height=30, corner_radius=15,
+            row_hdr, text='Artigo completo', width=140, height=32,
+            corner_radius=RAIO_CHIP,
             fg_color=GREEN, hover_color=GREEN_HOV, text_color='white',
             font=_font(12, 'bold'), border_width=1, border_color=GREEN_BORD,
             command=self._on_tudo_toggle)
@@ -955,12 +1021,12 @@ class Etapa3Frame(ctk.CTkFrame):
             var = ctk.BooleanVar(value=False)
             self._sec_vars[key] = var
             row = r1 if i < 4 else r2
-            b = ctk.CTkButton(row, text=label, height=30, corner_radius=15,
-                              fg_color=BG_PANEL, text_color=GRAY_BORD,
-                              border_color=GRAY_BORD, hover_color=ACCENT_LT,
+            b = ctk.CTkButton(row, text=label, height=32, corner_radius=RAIO_CHIP,
+                              fg_color=BG_PANEL, text_color=TEXT_OFF,
+                              border_color=DIVIDER, hover_color=ACCENT_LT,
                               font=_font(12), border_width=1, state='disabled',
                               command=lambda k=key: self._on_sec_chip_click(k))
-            b.pack(side='left', padx=(0, 8))
+            b.pack(side='left', padx=(0, S2))
             self._sec_btns[key] = b
 
         _sep(inner3, pady=(10, 6))
@@ -974,7 +1040,7 @@ class Etapa3Frame(ctk.CTkFrame):
         # ── Linha 2: painel de análise de motores ──────────────────────────────
         self._frame_analise = ctk.CTkFrame(main, fg_color=BG_CARD,
                                             border_color=DIVIDER, border_width=1,
-                                            corner_radius=8)
+                                            corner_radius=RAIO_CARD)
         self._frame_analise.grid(row=2, column=0, sticky='ew', pady=(0, 4))
         self._frame_analise.grid_remove()
 
@@ -987,39 +1053,70 @@ class Etapa3Frame(ctk.CTkFrame):
         self._lbl_resumo = ctk.CTkLabel(row_lhdr, text='', font=_font(13),
                                          text_color=TEXT_SEC)
         self._lbl_resumo.pack(side='left', padx=10)
+        # Contornados de propósito: são ações auxiliares e, preenchidos, roubavam
+        # a atenção do "Extrair artigos", que é a ação principal da tela.
         self._btn_rem_dup3 = ctk.CTkButton(
-            row_lhdr, text='Remover duplicatas', width=148, height=28,
-            fg_color=C_WARN, hover_color='#8B3A00',
-            text_color='white', font=_font(12, 'bold'),
+            row_lhdr, text='Remover duplicatas', width=148, height=30,
+            corner_radius=RAIO_CTRL,
+            fg_color=C_WARN_LT, hover_color='#FCEBD8',
+            text_color=C_WARN, font=_font(12, 'bold'),
+            border_width=1, border_color=C_WARN_BORD,
             command=self._remover_duplicatas_e3)
         self._btn_revisar_poss3 = ctk.CTkButton(
-            row_lhdr, text='Revisar possíveis duplicatas', width=190, height=28,
-            fg_color=ACCENT, hover_color=ACCENT_HOV,
-            text_color='white', font=_font(12, 'bold'),
+            row_lhdr, text='Revisar possíveis duplicatas', width=190, height=30,
+            corner_radius=RAIO_CTRL,
+            fg_color=ACCENT_LT, hover_color='#E2EBF7',
+            text_color=ACCENT_TXT, font=_font(12, 'bold'),
+            border_width=1, border_color=ACCENT_BORD,
             command=self._abrir_revisao_possiveis_duplicatas)
         self._btn_limpar = ctk.CTkButton(
-            row_lhdr, text='Limpar lista', width=104, height=28,
-            fg_color=BG_PANEL, hover_color=GRAY_BORD,
+            row_lhdr, text='Limpar lista', width=104, height=30,
+            corner_radius=RAIO_CTRL,
+            fg_color='transparent', hover_color=BG_PANEL,
             text_color=TEXT_SEC, font=_font(12),
             border_width=1, border_color=GRAY_BORD,
             command=self._limpar_lista)
 
         # ── Linha 4: lista de artigos (expande) ────────────────────────────────
+        # Cartão externo dá borda e cantos; dentro dele vão o cabeçalho fixo de
+        # colunas e a área rolável. Ambos usam BG_CARD, então os cantos retos
+        # dos filhos não aparecem contra o arredondado do cartão.
+        lista_wrap = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
+                                  border_width=1, corner_radius=RAIO_CARD)
+        lista_wrap.grid(row=4, column=0, sticky='nsew')
+        lista_wrap.grid_columnconfigure(0, weight=1)
+        lista_wrap.grid_rowconfigure(2, weight=1)
+
+        # Mesmo padx e mesmas colunas das linhas: é o que impede o cabeçalho de
+        # sair do prumo. O recuo lateral vem de COL_PADX, nunca do frame.
+        self._hdr_cols = ctk.CTkFrame(lista_wrap, fg_color='transparent',
+                                      height=26)
+        self._hdr_cols.grid(row=0, column=0, sticky='ew', padx=1, pady=(S2, S1))
+        self._hdr_cols.grid_propagate(False)
+        _montar_colunas(self._hdr_cols)
+        for col, texto in enumerate(('', 'Arquivo', 'Situação', 'Motor')):
+            ctk.CTkLabel(self._hdr_cols, text=texto, font=_font(11, 'bold'),
+                         text_color=TEXT_SEC,
+                         anchor='e' if col == 3 else 'w'
+                         ).grid(row=0, column=col, sticky='ew', padx=COL_PADX[col])
+
+        self._div_cols = ctk.CTkFrame(lista_wrap, fg_color=DIVIDER, height=1,
+                                      corner_radius=0)
+        self._div_cols.grid(row=1, column=0, sticky='ew')
+
         self._frame_arts = ctk.CTkScrollableFrame(
-            main, fg_color=BG_CARD, border_color=DIVIDER,
-            border_width=1, corner_radius=8)
-        self._frame_arts.grid(row=4, column=0, sticky='nsew')
-        self._lbl_sem_ia = ctk.CTkLabel(
-            self._frame_arts,
-            text='Selecione uma pasta, ou arraste PDFs diretamente aqui.',
-            text_color=TEXT_SEC, font=_font(13))
-        self._lbl_sem_ia.pack(pady=28)
+            lista_wrap, fg_color=BG_CARD, corner_radius=0, border_width=0)
+        self._frame_arts.grid(row=2, column=0, sticky='nsew', padx=1, pady=(0, 1))
+        self._frame_arts.bind('<Configure>',
+                              lambda _: self._sincronizar_cabecalho())
+        self._sobra_barra = None
+
         _bind_dnd_lista(self._frame_arts, self._on_dnd_lista)
-        _bind_dnd_rotulo(self._lbl_sem_ia, self._on_dnd_lista)
+        self._render_vazio()
 
         # ── Linha 5: fragmentação ──────────────────────────────────────────────
         frag_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
-                                  border_width=1, corner_radius=8)
+                                  border_width=1, corner_radius=RAIO_CARD)
         frag_card.grid(row=5, column=0, sticky='ew', pady=(6, 0))
         frag_inner = ctk.CTkFrame(frag_card, fg_color='transparent')
         frag_inner.pack(fill='x', padx=14, pady=(8, 10))
@@ -1089,6 +1186,39 @@ class Etapa3Frame(ctk.CTkFrame):
 
     # ── lógica ──────────────────────────────────────────────────────────────────
 
+    def _sincronizar_cabecalho(self):
+        """Desconta do cabeçalho a largura que a barra de rolagem tira da área
+        rolável. Sem isso a coluna elástica mede diferente nos dois e as
+        colunas da direita saem do prumo."""
+        barra = getattr(self._frame_arts, '_scrollbar', None)
+        try:
+            sobra = barra.winfo_width() if barra.winfo_ismapped() else 0
+        except Exception:
+            sobra = 0
+        if sobra != self._sobra_barra:          # evita relayout a cada evento
+            self._sobra_barra = sobra
+            self._hdr_cols.grid_configure(padx=(1, 1 + sobra))
+
+    def _render_vazio(self):
+        """Estado vazio da lista. Um lugar só — o drop no rótulo precisa ser
+        religado toda vez que ele é recriado, o que o _limpar_lista esquecia."""
+        self._mostrar_colunas(False)
+        self._lbl_sem_ia = ctk.CTkLabel(
+            self._frame_arts,
+            text='Nenhum artigo ainda\n\nSelecione uma pasta, arraste PDFs aqui\n'
+                 'ou importe uma coleção do Zotero.',
+            text_color=TEXT_SEC, font=_font(13), justify='center')
+        self._lbl_sem_ia.pack(pady=S6 * 2)
+        _bind_dnd_rotulo(self._lbl_sem_ia, self._on_dnd_lista)
+
+    def _mostrar_colunas(self, visivel):
+        """O cabeçalho de colunas só faz sentido com a lista preenchida."""
+        for w in (self._hdr_cols, self._div_cols):
+            if visivel:
+                w.grid()
+            else:
+                w.grid_remove()
+
     def _on_tudo_toggle(self):
         self._var_tudo.set(not self._var_tudo.get())
         tudo_on = self._var_tudo.get()
@@ -1099,7 +1229,7 @@ class Etapa3Frame(ctk.CTkFrame):
                 self._sec_vars[key].set(False)
                 self._sec_btns[key].configure(
                     state='disabled', fg_color=BG_PANEL,
-                    text_color=GRAY_BORD, border_color=GRAY_BORD)
+                    text_color=TEXT_OFF, border_color=DIVIDER)
         else:
             self._btn_tudo_chip.configure(
                 fg_color=BG_CARD, text_color=TEXT_SEC, border_color=GRAY_BORD)
@@ -1264,8 +1394,10 @@ class Etapa3Frame(ctk.CTkFrame):
         if not self._zot_importando:
             self._zot_estado = estado if estado and estado.get('key') else None
             if not estado:
-                self._lbl_zot.configure(text='✗  Zotero não conectado',
-                                        text_color=C_WARN)
+                # Neutro, não vermelho: Zotero fechado é o estado normal de
+                # quem não usa a integração, não um erro que o usuário causou.
+                self._lbl_zot.configure(text='○  Zotero não conectado',
+                                        text_color=TEXT_SEC)
                 self._btn_zot_importar.pack_forget()
             elif not estado.get('key'):
                 self._lbl_zot.configure(
@@ -1456,6 +1588,8 @@ class Etapa3Frame(ctk.CTkFrame):
         n_ok  = sum(1 for a in self._selecao if a['encontrado'])
         n_err = len(self._selecao) - n_ok
 
+        self._mostrar_colunas(bool(self._selecao))
+
         for i, art in enumerate(self._selecao):
             e_dup      = art['arquivo'] in duplicatas
             e_possivel = art['arquivo'] in self._possiveis_duplicatas
@@ -1463,39 +1597,46 @@ class Etapa3Frame(ctk.CTkFrame):
                       ACCENT_LT if e_possivel else
                       (BG_CARD if i % 2 == 0 else '#F7F8FA'))
             linha  = ctk.CTkFrame(self._frame_arts, fg_color=row_bg,
-                                  corner_radius=0, height=38)
+                                  corner_radius=0, height=ALT_LINHA)
             linha.pack(fill='x', padx=0)
             linha.pack_propagate(False)
+            _montar_colunas(linha)
             _bind_dnd_widget(linha, self._on_dnd_lista)
 
             icone = '✓' if art['encontrado'] else '✗'
             icor  = C_OK if art['encontrado'] else C_ERR
             ctk.CTkLabel(linha, text=icone, text_color=icor,
-                        font=_font(14, 'bold'), width=28
-                        ).pack(side='left', padx=(12, 4))
+                         font=_font(13, 'bold'), anchor='w'
+                         ).grid(row=0, column=0, sticky='ew', padx=COL_PADX[0])
 
-            nome_exib = art['arquivo'] if len(art['arquivo']) <= 52 else art['arquivo'][:49] + '…'
+            # Elide no meio: o fim do nome costuma ter ano/autor, que é o que
+            # distingue dois arquivos com o mesmo começo.
             cor_nome = C_WARN if e_dup else (ACCENT_TXT if e_possivel else TEXT_PRI)
-            ctk.CTkLabel(linha, text=nome_exib,
-                        font=_font(13, 'bold'), text_color=cor_nome,
-                        anchor='w').pack(side='left', padx=(0, 8))
-            if e_dup:
-                ctk.CTkLabel(linha, text='duplicata', text_color=C_WARN,
-                            font=_font(11)).pack(side='left')
-            elif e_possivel:
-                ctk.CTkLabel(linha, text='possível duplicata — revisar',
-                            text_color=ACCENT_TXT, font=_font(11)).pack(side='left')
+            ctk.CTkLabel(linha, text=_encurtar(art['arquivo']),
+                         font=_font(13), text_color=cor_nome,
+                         anchor='w').grid(row=0, column=1, sticky='ew',
+                                          padx=COL_PADX[1])
 
-            if art['encontrado']:
-                lbl_engine = ctk.CTkLabel(linha, text='…', font=_font(10),
-                                           text_color=TEXT_SEC, width=90, anchor='e')
-                lbl_engine.pack(side='right', padx=(0, 12))
-                self._engine_labels[art['arquivo']] = lbl_engine
+            if e_dup:
+                situacao, cor_sit = 'duplicata', C_WARN
+            elif e_possivel:
+                situacao, cor_sit = 'possível duplicata — revisar', ACCENT_TXT
+            elif not art['encontrado']:
+                situacao = ('pasta não definida' if not art['caminho']
+                            else 'arquivo não encontrado')
+                cor_sit = C_ERR
             else:
-                aviso = 'pasta não definida' if not art['caminho'] else 'arquivo não encontrado'
-                ctk.CTkLabel(linha, text=aviso, text_color=C_ERR,
-                            font=_font(12), anchor='e'
-                            ).pack(side='right', padx=12)
+                situacao, cor_sit = '', TEXT_SEC
+            ctk.CTkLabel(linha, text=situacao, text_color=cor_sit,
+                         font=_font(11), anchor='w'
+                         ).grid(row=0, column=2, sticky='ew', padx=COL_PADX[2])
+
+            lbl_engine = ctk.CTkLabel(linha, text='…' if art['encontrado'] else '',
+                                      font=_font(11), text_color=TEXT_SEC,
+                                      anchor='e')
+            lbl_engine.grid(row=0, column=3, sticky='ew', padx=COL_PADX[3])
+            if art['encontrado']:
+                self._engine_labels[art['arquivo']] = lbl_engine
 
         resumo = f'{len(self._selecao)} artigo(s)'
         if n_err:
@@ -1657,7 +1798,7 @@ class Etapa3Frame(ctk.CTkFrame):
         checkboxes = {}  # arquivo -> BooleanVar
         for gi, grupo in enumerate(grupos):
             card = ctk.CTkFrame(scroll, fg_color=BG_CARD, border_color=DIVIDER,
-                                 border_width=1, corner_radius=8)
+                                 border_width=1, corner_radius=RAIO_CARD)
             card.pack(fill='x', pady=(0, 10))
             ctk.CTkLabel(card, text=f'Grupo {gi + 1}', font=_font(11, 'bold'),
                          text_color=ACCENT_TXT, anchor='w'
@@ -1727,11 +1868,7 @@ class Etapa3Frame(ctk.CTkFrame):
         self._frame_analise.grid_remove()
         for w in self._frame_arts.winfo_children():
             w.destroy()
-        self._lbl_sem_ia = ctk.CTkLabel(
-            self._frame_arts,
-            text='Selecione uma pasta, ou arraste PDFs diretamente aqui.',
-            text_color=TEXT_SEC, font=_font(13))
-        self._lbl_sem_ia.pack(pady=28)
+        self._render_vazio()
         self._lbl_resumo.configure(text='')
         self._lbl_status3.configure(text='')
         self._lbl_preview_frags.configure(text='')
@@ -1963,6 +2100,7 @@ class ExcerptaApp(ctk.CTk):
             TkinterDnD.require(self)
         except Exception:
             pass
+        resolver_fonte()          # antes de construir qualquer widget
         self.title('Excerpta')
         self.geometry('1200x880')
         self.minsize(1060, 760)
