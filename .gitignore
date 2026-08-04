@@ -7,6 +7,10 @@ __pycache__/
 .excerpta_settings.json
 .excerpta_recent.json
 
+# Log de diagnóstico: normalmente é gravado na pasta dos PDFs, mas fica
+# ignorado aqui também caso a extração seja feita para dentro do projeto.
+excerpta_debug.log
+
 # Build / distribuição
 excerpta.zip
 *.zip

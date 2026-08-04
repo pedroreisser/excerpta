@@ -1,35 +1,27 @@
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
-import re
 import os
 import sys
-import json
 import subprocess
 import shutil
 import time
 import urllib.request
-import urllib.error
 import webbrowser
-from functools import lru_cache
 
-# ── Motores de extração ────────────────────────────────────────────────────────
-
-try:
-    import pymupdf4llm as _pymupdf4llm
-    PYMUPDF4LLM_OK = True
-except ImportError:
-    _pymupdf4llm = None
-    PYMUPDF4LLM_OK = False
-
-try:
-    from docling.document_converter import DocumentConverter as _DoclingConverter
-    DOCLING_OK = True
-except ImportError:
-    _DoclingConverter = None
-    DOCLING_OK = False
-
-MOTOR_OK = PYMUPDF4LLM_OK or DOCLING_OK
+import extracao
+import zotero_bridge
+from config import (
+    OLLAMA_DOWNLOAD_URL, OLLAMA_INSTALL_CMD, OLLAMA_MODELO_PADRAO,
+    OLLAMA_URL_PADRAO,
+    _get_setting, _gravar_recente, _ler_recentes, _ler_settings,
+    _salvar_settings, _set_setting,
+)
+from duplicatas import _detectar_grupos_possiveis_duplicatas, _hash_arquivo
+from motor_pdf import (
+    DOCLING_OK, MOTOR_OK, _TEMPO_DIGITAL_S, _TEMPO_OCR_S,
+    _motor_para_tipo, detectar_tipo_pdf,
+)
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -38,119 +30,11 @@ ctk.set_default_color_theme("blue")
 # ══════════════════════════════════════ constantes ══════════════════════════════
 
 
-_NUM_PREFIX_RE = re.compile(
-    r'^[\d]+(?:\.[\d]+)*\.?\s*\|\s*'                      # "1 | ", "2.3 | "
-    r'|^[\d]+(?:\.[\d]+)*\.?\s+'                           # "1.", "2.1.", "1 "
-    r'|^[A-Z]\.\s+'                                        # "A. "
-    r'|^(?:II|III|IV|VI{0,3}|IX|XI{0,2}|XII)\.?\s+'      # "II.", "III.", "IV." …
-)
-
-_SUPLEMENTAR_INTEGRAL_RE = re.compile(
-    r'supporting\s+information|supplementary\s+material|supplementary\s+data'
-    r'|table\s+s\d+|figure\s+s\d+|supplemental|material\s+suplementar',
-    re.IGNORECASE
-)
-
-RECENTS_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              '.excerpta_recent.json')
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              '.excerpta_settings.json')
-
-
-def _ler_settings():
-    try:
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _salvar_settings(dados):
-    try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(dados, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
-def _get_setting(chave, padrao=None):
-    return _ler_settings().get(chave, padrao)
-
-
-def _set_setting(chave, valor):
-    dados = _ler_settings()
-    dados[chave] = valor
-    _salvar_settings(dados)
-
-_TEMPO_DIGITAL_S   = 2.0
-_TEMPO_OCR_S       = 45.0
-# Taxas por KB usadas para estimar tempo proporcional ao tamanho do arquivo.
-# Derivadas dos tempos acima assumindo um PDF "típico" de 2 MB.
-_TAXA_DIGITAL_S_KB = _TEMPO_DIGITAL_S / 2048.0
-_TAXA_OCR_S_KB     = _TEMPO_OCR_S     / 2048.0
-_FUZZY_LIMIAR    = 0.85
-
-OLLAMA_URL_PADRAO    = 'http://localhost:11434'
-OLLAMA_MODELO_PADRAO = 'qwen2.5:7b-instruct'
-OLLAMA_TIMEOUT_S     = 25
-OLLAMA_INSTALL_CMD   = 'curl -fsSL https://ollama.com/install.sh | sh'
-OLLAMA_DOWNLOAD_URL  = 'https://ollama.com/download'
-
-
 def _pip_flags():
     """Flags para pip que evitam precisar de permissão de administrador."""
     if sys.platform == 'win32':
         return ['--user']
     return ['--break-system-packages']
-
-# Palavras fortes: inequívocas, verificadas por "começa com" (degrau 1)
-_SECAO_STRONG_PREFIXES = {
-    'abstract':    ['abstract', 'resumo', 'summary'],
-    'introducao':  ['introduction', 'introdução', 'background'],
-    'metodos':     ['methods', 'methodology', 'materials', 'métodos', 'materiais'],
-    'resultados':  ['results', 'resultados', 'findings'],
-    'discussao':   ['discussion', 'discussão'],
-    'conclusao':   ['conclusion', 'conclusions', 'conclusão', 'conclusões'],
-    'referencias': ['references', 'bibliography', 'referências', 'referencia'],
-    'suplementar': ['supporting', 'supplementary', 'supplemental', 'appendix', 'appendices'],
-}
-
-# Todas as palavras-chave como strings simples, usadas no fuzzy (degrau 2)
-_SECAO_ALL_KEYWORDS = {
-    'abstract':    ['abstract', 'resumo', 'summary'],
-    'introducao':  ['introduction', 'introdução', 'background', 'overview', 'context'],
-    'metodos':     ['methods', 'materials and methods', 'methodology', 'métodos',
-                    'materiais e métodos', 'experimental procedures', 'study design',
-                    'patients and methods'],
-    'resultados':  ['results', 'resultados', 'findings', 'outcomes'],
-    'discussao':   ['discussion', 'discussão', 'interpretation', 'analysis'],
-    'conclusao':   ['conclusions', 'conclusion', 'concluding remarks', 'conclusões', 'conclusão',
-                    'summary and conclusions', 'final remarks', 'perspectives', 'closing remarks'],
-    'referencias': ['references', 'bibliography', 'literature cited', 'works cited',
-                    'referências', 'referencia'],
-    'suplementar': ['supporting information', 'supplementary material', 'supplementary data',
-                    'supplementary methods', 'supplemental', 'appendix', 'appendices',
-                    'material suplementar'],
-}
-
-# Cabeçalhos compostos que mapeiam para múltiplas seções simultaneamente
-_SECAO_COMPOSTOS = [
-    ('results and discussion',           frozenset({'resultados', 'discussao'})),
-    ('results, discussion and conclusions', frozenset({'resultados', 'discussao', 'conclusao'})),
-    ('discussion and conclusions',       frozenset({'discussao', 'conclusao'})),
-    ('discussion and conclusion',        frozenset({'discussao', 'conclusao'})),
-    ('conclusions and future work',      frozenset({'conclusao'})),
-    ('conclusion and future work',       frozenset({'conclusao'})),
-    ('conclusions and perspectives',     frozenset({'conclusao'})),
-    ('conclusion and perspectives',      frozenset({'conclusao'})),
-    ('background and objectives',        frozenset({'introducao'})),
-    ('background and aims',              frozenset({'introducao'})),
-    ('aims and objectives',              frozenset({'introducao'})),
-    ('aims and methods',                 frozenset({'introducao', 'metodos'})),
-    ('materials and methods',            frozenset({'metodos'})),
-    ('patients and methods',             frozenset({'metodos'})),
-    ('subjects and methods',             frozenset({'metodos'})),
-]
 
 # ── Paleta Zotero-inspirada (tema claro) ──────────────────────────────────────
 F           = "Ubuntu Sans"
@@ -187,514 +71,7 @@ _COR_PYMUPDF = ACCENT
 _COR_DOCLING = "#7C3AED"
 
 
-# ══════════════════════════════════════ motores ══════════════════════════════════
-
-def detectar_tipo_pdf(caminho):
-    """Retorna 'digital' se PDF tem texto nativo, 'escaneado' caso contrário."""
-    try:
-        import fitz
-        doc = fitz.open(caminho)
-        chars = sum(len(doc[i].get_text().strip()) for i in range(min(3, len(doc))))
-        doc.close()
-        return 'digital' if chars > 100 else 'escaneado'
-    except ImportError:
-        return 'digital'
-    except Exception:
-        return 'digital'
-
-
-def _motor_para_tipo(tipo):
-    if tipo == 'digital' and PYMUPDF4LLM_OK:
-        return 'pymupdf4llm'
-    if DOCLING_OK:
-        return 'docling'
-    if PYMUPDF4LLM_OK:
-        return 'pymupdf4llm'
-    return 'indisponível'
-
-
-_IMG_LINE_RE   = re.compile(r'^==>.+<==\s*$')
-_IMG_START_RE  = re.compile(r'^\*\*-+\s*Start of picture text\s*-+\*\*\s*$', re.IGNORECASE)
-_IMG_END_RE    = re.compile(r'^\*\*-+\s*End of picture text\s*-+\*\*\s*$',   re.IGNORECASE)
-_PICTURE_METADADOS_RE = re.compile(
-    r'Received\s*:|Accepted\s*:|Published\s*:|\[\d|@|doi\.org|https?://'
-    r'|\b(?:University|Institute|Department|Laboratory|Center|Centre)\b',
-    re.IGNORECASE
-)
-
-
-def _limpar_markdown_imagens(md):
-    """Remove marcações de imagem residuais do pymupdf4llm."""
-    linhas = md.splitlines()
-    resultado = []
-    i = 0
-    while i < len(linhas):
-        linha = linhas[i]
-
-        # Tipo 1: linha ==> ... <==
-        if _IMG_LINE_RE.match(linha):
-            i += 1
-            continue
-
-        # Tipo 2: bloco Start/End of picture text
-        if _IMG_START_RE.match(linha):
-            i += 1
-            bloco = []
-            while i < len(linhas):
-                l = linhas[i]
-                if _IMG_END_RE.match(l):
-                    i += 1
-                    break
-                # Dupla linha em branco → fim de bloco sem marcador de fim
-                if (l.strip() == '' and i + 1 < len(linhas)
-                        and linhas[i + 1].strip() == ''):
-                    break
-                bloco.append(l)
-                i += 1
-            conteudo = '\n'.join(bloco).strip()
-            if _PICTURE_METADADOS_RE.search(conteudo):
-                pass              # lixo de afiliação/metadados → descarta tudo
-            elif len(conteudo) > 80:
-                resultado.append(conteudo)   # conteúdo útil → mantém sem marcações
-            # conteúdo curto sem lixo → descarta
-            continue
-
-        resultado.append(linha)
-        i += 1
-
-    return re.sub(r'\n{3,}', '\n\n', '\n'.join(resultado))
-
-
-# Marca d'água/rodapé de sites de PDF pirata (Sci-Hub, Library Genesis, Anna's
-# Archive) que às vezes fica gravada como texto real na página — o motor de
-# extração copia junto. Removida por linha para não afetar o resto do conteúdo.
-_SITE_PIRATA_RE = re.compile(
-    r"sci[-\s]?hub(?:\.\w{2,6})?"
-    r"|library\s*genesis|libgen(?:\.\w{2,6})?"
-    r"|anna'?s?[-\s]?archive(?:\.\w{2,6})?",
-    re.IGNORECASE
-)
-
-
-def _limpar_marcas_pirata(md):
-    """Remove linhas com marca d'água de sites de PDF pirata do Markdown."""
-    linhas = md.splitlines()
-    return '\n'.join(l for l in linhas if not _SITE_PIRATA_RE.search(l))
-
-
-def converter_pdf(caminho):
-    """Converte PDF para Markdown. Retorna (markdown, nome_motor)."""
-    tipo = detectar_tipo_pdf(caminho)
-    if tipo == 'digital' and PYMUPDF4LLM_OK:
-        md = _pymupdf4llm.to_markdown(
-            caminho, ignore_images=True, ignore_graphics=True)
-        md = _limpar_marcas_pirata(_limpar_markdown_imagens(md))
-        return md, 'pymupdf4llm'
-    if DOCLING_OK:
-        conv = _DoclingConverter()
-        result = conv.convert(caminho)
-        md = _limpar_marcas_pirata(result.document.export_to_markdown())
-        return md, 'docling'
-    if PYMUPDF4LLM_OK:
-        md = _pymupdf4llm.to_markdown(
-            caminho, ignore_images=True, ignore_graphics=True)
-        md = _limpar_marcas_pirata(_limpar_markdown_imagens(md))
-        return md, 'pymupdf4llm'
-    raise ImportError("Nenhum motor instalado. Execute: pip install pymupdf4llm")
-
-
-
-def _e_suplementar_integral(caminho):
-    """Retorna True se as primeiras páginas indicam ser material suplementar integral."""
-    try:
-        import fitz
-        doc = fitz.open(caminho)
-        texto = ''.join(doc[i].get_text() for i in range(min(3, len(doc))))
-        doc.close()
-    except Exception:
-        return False
-    matches = _SUPLEMENTAR_INTEGRAL_RE.findall(texto[:3000])
-    return len(matches) >= 2
-
-
 # ══════════════════════════════════════ helpers ══════════════════════════════════
-
-def extrair_chave_zotero(caminho):
-    sem_ext = os.path.splitext(os.path.basename(caminho))[0]
-    return sem_ext.split(" - ")[0].strip() if " - " in sem_ext else sem_ext.strip()
-
-
-
-# ── Markdown helpers ──────────────────────────────────────────────────────────
-
-def _cabecalho_nivel(linha):
-    """Retorna (nivel, texto_limpo) se linha é cabeçalho Markdown, ou None."""
-    m = re.match(r'^(#{1,6})\s+(.+)', linha)
-    if not m:
-        return None
-    nivel = len(m.group(1))
-    texto = m.group(2).strip()
-    # 1. Remove formatação Markdown: **, *, __, _, `
-    texto = re.sub(r'[*_`]+', '', texto)
-    # 2. Remove prefixo numérico (inclusive variante com pipe: "1 |", "2.3 |")
-    texto = _NUM_PREFIX_RE.sub('', texto)
-    # 3. Normaliza espaços
-    texto = re.sub(r'\s+', ' ', texto).strip()
-    return nivel, texto
-
-
-@lru_cache(maxsize=512)
-def _classificar_cabecalho(texto):
-    """Classifica cabeçalho. Retorna str, frozenset (composto) ou None."""
-    import difflib
-    texto_l = texto.lower().strip()
-    if not texto_l:
-        return None
-
-    # Degrau 0: cabeçalhos compostos (exato + fuzzy leve)
-    for padrao, secoes in _SECAO_COMPOSTOS:
-        if texto_l == padrao:
-            return secoes
-        if difflib.SequenceMatcher(None, texto_l, padrao).ratio() >= _FUZZY_LIMIAR:
-            return secoes
-
-    # Degrau 1: prefixo exato de palavra forte (inequívoca)
-    for key, prefixes in _SECAO_STRONG_PREFIXES.items():
-        for prefix in prefixes:
-            if texto_l.startswith(prefix):
-                return key
-
-    # Degrau 2: fuzzy contra todas as palavras-chave
-    for key, keywords in _SECAO_ALL_KEYWORDS.items():
-        for kw in keywords:
-            ratio = difflib.SequenceMatcher(None, texto_l, kw).ratio()
-            if ratio >= _FUZZY_LIMIAR:
-                return key
-
-    return None
-
-
-
-def _md_remover_secoes(md, secoes_a_remover):
-    """Remove blocos de seções do Markdown (usado no fallback sem duplicação)."""
-    if not secoes_a_remover:
-        return md
-    linhas = md.splitlines()
-    cabecalhos = []
-    for idx_l, linha in enumerate(linhas):
-        r = _cabecalho_nivel(linha)
-        if r:
-            nivel, texto = r
-            cabecalhos.append((idx_l, nivel, _classificar_cabecalho(texto)))
-    excluir = set()
-    for i, (idx_l, nivel, chave) in enumerate(cabecalhos):
-        remover = (isinstance(chave, frozenset) and bool(chave & secoes_a_remover)
-                   or isinstance(chave, str) and chave in secoes_a_remover)
-        if remover:
-            end = len(linhas)
-            for j in range(i + 1, len(cabecalhos)):
-                if cabecalhos[j][1] <= nivel:
-                    end = cabecalhos[j][0]
-                    break
-            excluir.update(range(idx_l, end))
-    return '\n'.join(l for i, l in enumerate(linhas) if i not in excluir).strip()
-
-
-def _e_review(caminho, md):
-    """Detecta se o artigo é uma review por metadados, nome do arquivo ou heurística."""
-    # 1. Metadados internos do PDF
-    try:
-        import fitz
-        doc = fitz.open(caminho)
-        meta = doc.metadata or {}
-        doc.close()
-        campos = (meta.get('type', '') + ' ' + meta.get('subject', '')).lower()
-        if 'review' in campos:
-            return True
-    except Exception:
-        pass
-    # 2. Nome do arquivo
-    if 'review' in os.path.basename(caminho).lower():
-        return True
-    # 3. Heurística: ausência de Methods E Results — sinal forte de review
-    tem_metodos = tem_resultados = False
-    for linha in md.splitlines():
-        r = _cabecalho_nivel(linha)
-        if r:
-            chave = _classificar_cabecalho(r[1])
-            if chave == 'metodos':
-                tem_metodos = True
-            elif chave == 'resultados':
-                tem_resultados = True
-    return not tem_metodos and not tem_resultados
-
-
-def _abstract_por_posicao(md):
-    """Captura texto antes do primeiro cabeçalho de seção conhecida como abstract.
-
-    Cobre papers onde o abstract aparece como parágrafo corrido sem cabeçalho.
-    Ignora cabeçalhos de nível 1 (título do artigo).
-    """
-    linhas = md.splitlines()
-    pre = []
-    for linha in linhas:
-        r = _cabecalho_nivel(linha)
-        if r:
-            nivel, texto = r
-            if _classificar_cabecalho(texto) is not None:
-                break        # primeira seção conhecida — para aqui
-            if nivel == 1:
-                continue     # título do artigo — pula sem incluir
-        pre.append(linha)
-
-    texto = re.sub(r'\n{3,}', '\n\n', '\n'.join(pre)).strip()
-    if len(texto) >= 100:
-        return texto[:3000]
-    return ''
-
-
-# Frases que sinalizam o início de um parágrafo de conclusão sem cabeçalho
-_CONCLUSAO_FRASE_RE = re.compile(
-    r'^\s*(?:In\s+conclusion[,\s]|In\s+summary[,\s]|To\s+conclude[,\s]'
-    r'|To\s+summarize[,\s]|Taken\s+together[,\s]|Collectively[,\s]'
-    r'|Overall[,\s]|In\s+closing[,\s]'
-    r'|Em\s+conclus[aã]o[,\s]|Em\s+resumo[,\s]|Concluindo[,\s])',
-    re.IGNORECASE
-)
-
-
-def _conclusao_por_frase(md):
-    """Extrai conclusão por frase-sinal no último terço do artigo.
-
-    Cobre papers sem cabeçalho ## Conclusions onde a conclusão aparece como
-    "In conclusion, ..." embutido no final da Discussion.
-    """
-    linhas = md.splitlines()
-    n = len(linhas)
-    inicio = max(0, int(n * 0.60))   # busca só no último 40%
-
-    resultado = []
-    dentro = False
-
-    for i in range(inicio, n):
-        linha = linhas[i]
-        l = linha.strip()
-
-        if _cabecalho_nivel(linha):
-            if dentro:
-                break         # novo cabeçalho encerra o bloco
-            resultado = []
-            dentro = False
-            continue
-
-        if not dentro and _CONCLUSAO_FRASE_RE.match(l):
-            dentro = True
-            resultado = [l]
-        elif dentro:
-            if not l and resultado:
-                # Linha em branco: ver se o próximo parágrafo continua
-                # (acumulamos uma linha vazia e seguimos — interrompemos
-                #  só na próxima linha em branco ou no cabeçalho)
-                resultado.append('')
-            elif l:
-                resultado.append(l)
-            else:
-                break   # segunda linha em branco consecutiva = fim
-
-    # Limpar linhas em branco finais
-    while resultado and not resultado[-1]:
-        resultado.pop()
-
-    if resultado:
-        texto = '\n'.join(resultado).strip()
-        if len(texto) >= 100:
-            return texto[:2500]
-    return ''
-
-
-def _extrair_secoes(md, secoes_cfg):
-    """Extrai seções do Markdown com suporte a cabeçalhos compostos.
-
-    Retorna (encontradas, nao_encontradas, partes) onde partes é lista de strings
-    '[SECAO]\\nconteúdo'. Compostos são extraídos uma única vez, sem duplicação.
-    """
-    linhas = md.splitlines()
-    cabecalhos = []  # (idx_linha, nivel, chave_classificada)
-    for idx_l, linha in enumerate(linhas):
-        r = _cabecalho_nivel(linha)
-        if r:
-            nivel, texto = r
-            cabecalhos.append((idx_l, nivel, _classificar_cabecalho(texto)))
-
-    def _bloco(cab_idx):
-        start = cabecalhos[cab_idx][0]
-        nivel = cabecalhos[cab_idx][1]
-        end   = len(linhas)
-        for j in range(cab_idx + 1, len(cabecalhos)):
-            if cabecalhos[j][1] <= nivel:
-                end = cabecalhos[j][0]
-                break
-        return '\n'.join(linhas[start + 1:end]).strip()
-
-    secoes_pedidas = set(secoes_cfg)
-    encontradas    = []
-    nao_encontradas = []
-    partes         = []
-    ja_usados      = set()  # índices de cabeçalhos já extraídos
-
-    for sec in secoes_cfg:
-        if sec in encontradas:
-            continue  # coberto por composite anterior
-
-        for cab_idx, (_, nivel, chave) in enumerate(cabecalhos):
-            if cab_idx in ja_usados:
-                continue
-            if isinstance(chave, frozenset):
-                if sec not in chave:
-                    continue
-                cobradas = chave & secoes_pedidas
-            elif chave == sec:
-                cobradas = {sec}
-            else:
-                continue
-
-            conteudo = _bloco(cab_idx)
-            if conteudo:
-                # Mudança 5: limpar marcadores de imagem residuais no conteúdo
-                conteudo = re.sub(r'^==>.*?<==[ \t]*$', '', conteudo, flags=re.MULTILINE)
-                conteudo = re.sub(r'\n{3,}', '\n\n', conteudo).strip()
-            if conteudo:
-                label = ('+'.join(s.upper() for s in sorted(cobradas))
-                         if len(cobradas) > 1 else sec.upper())
-                partes.append(f'[{label}]\n{conteudo}')
-                ja_usados.add(cab_idx)
-                for s in cobradas:
-                    if s not in encontradas:
-                        encontradas.append(s)
-                break
-        else:
-            # Cabeçalho não encontrado — fallbacks posicionais
-            if sec == 'abstract' and sec not in encontradas:
-                conteudo = _abstract_por_posicao(md)
-                if conteudo:
-                    partes.append(f'[ABSTRACT]\n{conteudo}')
-                    encontradas.append('abstract')
-                    continue
-            if sec == 'conclusao' and sec not in encontradas:
-                conteudo = _conclusao_por_frase(md)
-                if conteudo:
-                    partes.append(f'[CONCLUSAO]\n{conteudo}')
-                    encontradas.append('conclusao')
-                    continue
-            if sec not in encontradas:
-                nao_encontradas.append(sec)
-
-    return encontradas, nao_encontradas, partes
-
-
-def _extrair_secoes_ia(md_texto, secoes):
-    """Pergunta a um modelo local (Ollama) onde cada seção não encontrada começa.
-
-    Retorna {secao: trecho_inicial_literal, ...} com o que o modelo respondeu,
-    ou {} se o Ollama estiver indisponível, der erro ou estourar o timeout —
-    nesses casos o chamador deve seguir para o fallback antigo normalmente.
-    """
-    if not secoes:
-        return {}
-
-    url    = _get_setting('ollama_url', OLLAMA_URL_PADRAO).rstrip('/')
-    modelo = _get_setting('ollama_modelo', OLLAMA_MODELO_PADRAO)
-    nomes  = ', '.join(secoes)
-
-    prompt = (
-        'Você recebe abaixo o texto (Markdown) de um artigo científico. '
-        f'Localize onde começa o CORPO de cada uma destas seções: {nomes}.\n'
-        'Para cada seção que encontrar, copie EXATAMENTE (sem parafrasear, '
-        'sem resumir) a primeira frase do conteúdo da seção — não o título/'
-        'cabeçalho, o texto logo depois dele. Se não encontrar uma seção, '
-        'simplesmente não a inclua na resposta.\n'
-        'Responda apenas com um objeto JSON no formato '
-        '{"nome_da_secao": "trecho inicial literal"}.\n\n'
-        f'TEXTO:\n{md_texto[:15000]}'
-    )
-    payload = {
-        'model': modelo,
-        'prompt': prompt,
-        'format': 'json',
-        'stream': False,
-        'options': {'temperature': 0, 'num_ctx': 8192},
-    }
-
-    try:
-        req = urllib.request.Request(
-            f'{url}/api/generate',
-            data=json.dumps(payload).encode('utf-8'),
-            headers={'Content-Type': 'application/json'},
-        )
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_S) as resp:
-            corpo = json.loads(resp.read().decode('utf-8'))
-        marcadores = json.loads(corpo.get('response', '{}'))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
-        return {}
-
-    if not isinstance(marcadores, dict):
-        return {}
-    return {k: v for k, v in marcadores.items()
-            if k in secoes and isinstance(v, str) and v.strip()}
-
-
-def _fallback_secoes_ia(md, secoes_faltando):
-    """Tenta recuperar seções que o regex/fuzzy não encontraram, via IA local.
-
-    Retorna (partes, encontradas) no mesmo formato de _extrair_secoes.
-    Localiza no texto original o trecho literal apontado pela IA; seções
-    cujo trecho não é encontrado (IA "inventou" ou parafraseou) são ignoradas
-    e continuam no fallback antigo.
-    """
-    marcadores = _extrair_secoes_ia(md, secoes_faltando)
-    if not marcadores:
-        return [], []
-
-    # Posições de cabeçalhos Markdown reais, para não deixar o conteúdo de
-    # uma seção vazar para dentro do título da seção seguinte.
-    pos_cabecalhos = [m.start() for m in re.finditer(r'^#{1,6}\s+.+$', md, re.MULTILINE)]
-
-    posicoes = []
-    for secao, trecho in marcadores.items():
-        trecho = trecho.strip()
-        idx = md.find(trecho)
-        if idx < 0:
-            idx = md.lower().find(trecho.lower())
-        if idx >= 0:
-            posicoes.append((idx, secao))
-    posicoes.sort()
-
-    partes, encontradas = [], []
-    for i, (idx, secao) in enumerate(posicoes):
-        fim = posicoes[i + 1][0] if i + 1 < len(posicoes) else len(md)
-        prox_cabecalho = next((p for p in pos_cabecalhos if p > idx), len(md))
-        fim = min(fim, prox_cabecalho)
-        conteudo = md[idx:fim].strip()
-        if conteudo:
-            partes.append(f'[{secao.upper()} — via IA local]\n{conteudo}')
-            encontradas.append(secao)
-    return partes, encontradas
-
-
-def _fragmentar_blocos(blocos, max_kb):
-    """Agrupa blocos em fragmentos sem exceder max_kb. Nunca corta um bloco."""
-    fragmentos, atual, kb_atual = [], [], 0.0
-    for bloco in blocos:
-        kb = len(bloco.encode('utf-8')) / 1024
-        if atual and kb_atual + kb > max_kb:
-            fragmentos.append(atual)
-            atual, kb_atual = [bloco], kb
-        else:
-            atual.append(bloco)
-            kb_atual += kb
-    if atual:
-        fragmentos.append(atual)
-    return fragmentos
 
 
 
@@ -719,28 +96,6 @@ def _sep(parent, pady=(0, 0)):
 
 
 # ── Histórico de pastas / arquivos recentes ───────────────────────────────────
-
-def _ler_recentes():
-    try:
-        with open(RECENTS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {'pastas': [], 'ia_files': []}
-
-
-def _gravar_recente(chave, valor):
-    dados = _ler_recentes()
-    lista = dados.get(chave, [])
-    if valor in lista:
-        lista.remove(valor)
-    lista.insert(0, valor)
-    dados[chave] = lista[:6]
-    try:
-        with open(RECENTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(dados, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
 
 def _btn_recentes(parent, entry, chave, on_select):
     """Botão ▾ que abre popup com os caminhos recentes."""
@@ -788,12 +143,29 @@ def _bind_dnd_entry(entry, callback):
 
 
 def _bind_dnd_lista(scrollable_frame, callback):
-    """Registra drag-and-drop na lista de artigos (CTkScrollableFrame)."""
+    """Registra drag-and-drop na lista de artigos (CTkScrollableFrame).
+
+    Aceita texto além de arquivos: arrastar um item pai do Zotero não traz
+    PDF nenhum, só os metadados formatados pelo Quick Copy.
+    """
     try:
-        from tkinterdnd2 import DND_FILES
+        from tkinterdnd2 import DND_FILES, DND_TEXT
         for w in (scrollable_frame._parent_canvas, scrollable_frame):
-            w.drop_target_register(DND_FILES)
+            # Só estes dois: com '*' o tkdnd pode negociar o "zotero/item"
+            # que o Zotero anuncia primeiro, e que só traz IDs internos
+            # inúteis fora dele. O text/plain é o que carrega os metadados.
+            w.drop_target_register(DND_FILES, DND_TEXT)
             w.dnd_bind('<<Drop>>', callback)
+    except Exception:
+        pass
+
+
+def _bind_dnd_rotulo(rotulo, callback):
+    """Registra drop num CTkLabel — ele cobre a área da lista quando vazia."""
+    try:
+        from tkinterdnd2 import DND_FILES, DND_TEXT
+        rotulo.drop_target_register(DND_FILES, DND_TEXT)
+        rotulo.dnd_bind('<<Drop>>', callback)
     except Exception:
         pass
 
@@ -801,8 +173,8 @@ def _bind_dnd_lista(scrollable_frame, callback):
 def _bind_dnd_widget(widget, callback):
     """Registra drag-and-drop num CTkFrame individual (via _canvas interno)."""
     try:
-        from tkinterdnd2 import DND_FILES
-        widget._canvas.drop_target_register(DND_FILES)
+        from tkinterdnd2 import DND_FILES, DND_TEXT
+        widget._canvas.drop_target_register(DND_FILES, DND_TEXT)
         widget._canvas.dnd_bind('<<Drop>>', callback)
     except Exception:
         pass
@@ -972,6 +344,20 @@ class SettingsDialog(ctk.CTkToplevel):
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
                         ).pack(anchor='w', pady=(0, 8))
+
+        self._var_log = ctk.BooleanVar(value=cfg.get('log_diagnostico', True))
+        ctk.CTkCheckBox(inner,
+                        text='Gravar log técnico de diagnóstico',
+                        variable=self._var_log,
+                        font=_font(13), checkmark_color='white',
+                        fg_color=GREEN, hover_color=GREEN_HOV,
+                        border_color=GRAY_BORD
+                        ).pack(anchor='w', pady=(0, 2))
+        ctk.CTkLabel(inner,
+                     text='Arquivo técnico (excerpta_debug.log) com detalhes de cada '
+                          'artigo — envie-o se der problema.',
+                     font=_font(11), text_color=TEXT_SEC, wraplength=340
+                     ).pack(pady=(0, 8), anchor='w')
 
     # ── aba IA local ────────────────────────────────────────────────────────
 
@@ -1308,6 +694,7 @@ class SettingsDialog(ctk.CTkToplevel):
             'usar_ocr': self._var_ocr.get(),
             'mostrar_resumo': self._var_resumo.get(),
             'perguntar_abrir_pasta': self._var_pasta.get(),
+            'log_diagnostico': self._var_log.get(),
             'usar_ia_local': self._var_ia_local.get(),
             'ollama_url': self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO,
             'ollama_modelo': self._entry_ollama_modelo.get().strip() or OLLAMA_MODELO_PADRAO,
@@ -1319,7 +706,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
 class StatsWindow(ctk.CTkToplevel):
     def __init__(self, parent, stats, path_saida,
-                 fragmentado=False, n_frags=0, kb_frags=None):
+                 fragmentado=False, n_frags=0, kb_frags=None, debug_log_path=None):
         super().__init__(parent)
         self.title('Extração concluída')
         self.resizable(False, False)
@@ -1420,6 +807,14 @@ class StatsWindow(ctk.CTkToplevel):
                          command=lambda: [abrir_no_sistema(pasta_final), self.destroy()]
                          ).pack(side='left', padx=(0, 8))
 
+        if debug_log_path:
+            ctk.CTkButton(btn_row, text='Log técnico', width=110, height=32,
+                         fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                         text_color=TEXT_PRI, font=_font(13),
+                         border_width=1, border_color=GRAY_BORD,
+                         command=lambda: abrir_no_sistema(debug_log_path)
+                         ).pack(side='left', padx=(0, 8))
+
         ctk.CTkButton(btn_row, text='Fechar', width=90, height=32,
                      fg_color=BG_PANEL, hover_color=GRAY_BORD,
                      text_color=TEXT_PRI, font=_font(13),
@@ -1452,11 +847,22 @@ class Etapa3Frame(ctk.CTkFrame):
         self._btn_tudo_chip  = None
         self._engine_labels  = {}
         self._tipos_pdf      = {}
+        self._hash_cache     = {}
+        self._duplicatas_atuais = set()
+        self._grupos_possiveis_duplicatas = []
+        self._possiveis_duplicatas = set()
         self._cancelando     = False
         self._n_digital      = 0
         self._n_ocr          = 0
         self._lbl_tempo_analise = None
+        # Zotero: monitor da coleção aberta + itens arrastados (metadados)
+        self._zot_importando  = False
+        self._zot_ultimo_drop = ('?', '')
+        self._zot_estado      = None
+        self._zot_ocupado     = False
+        self._zot_after_id    = None
         self._build()
+        self._zot_tick()
 
     def _build(self):
         hdr = _header(self, bg=GREEN_HDR, txt_color=GREEN_TXT,
@@ -1493,6 +899,23 @@ class Etapa3Frame(ctk.CTkFrame):
                      font=_font(14), command=self._sel_pasta3).pack(side='left')
         _btn_recentes(r1, self._entry_pasta3, 'pastas', self._aplicar_pasta3)
         _bind_dnd_entry(self._entry_pasta3, self._on_dnd_pasta3)
+
+        # ── Zotero: espelha a coleção aberta na janela do Zotero ───────────
+        ctk.CTkFrame(cfg, fg_color=DIVIDER, height=1,
+                     corner_radius=0).pack(fill='x', padx=16)
+        rz = ctk.CTkFrame(cfg, fg_color='transparent')
+        rz.pack(fill='x', padx=16, pady=(10, 12))
+        ctk.CTkLabel(rz, text='Zotero', font=_font(14, 'bold'),
+                     text_color=TEXT_PRI, width=148, anchor='w').pack(side='left')
+        self._lbl_zot = ctk.CTkLabel(rz, text='verificando…', font=_font(13),
+                                     text_color=TEXT_SEC, anchor='w')
+        self._lbl_zot.pack(side='left', fill='x', expand=True)
+        self._btn_zot_importar = ctk.CTkButton(
+            rz, text='Importar PDFs', width=140, height=34,
+            fg_color=ACCENT, hover_color=ACCENT_HOV,
+            text_color='white', font=_font(13, 'bold'),
+            command=self._zot_importar)
+
 
         # ── Linha 1: seções a extrair ──────────────────────────────────────────
         sec_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
@@ -1569,6 +992,11 @@ class Etapa3Frame(ctk.CTkFrame):
             fg_color=C_WARN, hover_color='#8B3A00',
             text_color='white', font=_font(12, 'bold'),
             command=self._remover_duplicatas_e3)
+        self._btn_revisar_poss3 = ctk.CTkButton(
+            row_lhdr, text='Revisar possíveis duplicatas', width=190, height=28,
+            fg_color=ACCENT, hover_color=ACCENT_HOV,
+            text_color='white', font=_font(12, 'bold'),
+            command=self._abrir_revisao_possiveis_duplicatas)
         self._btn_limpar = ctk.CTkButton(
             row_lhdr, text='Limpar lista', width=104, height=28,
             fg_color=BG_PANEL, hover_color=GRAY_BORD,
@@ -1587,6 +1015,7 @@ class Etapa3Frame(ctk.CTkFrame):
             text_color=TEXT_SEC, font=_font(13))
         self._lbl_sem_ia.pack(pady=28)
         _bind_dnd_lista(self._frame_arts, self._on_dnd_lista)
+        _bind_dnd_rotulo(self._lbl_sem_ia, self._on_dnd_lista)
 
         # ── Linha 5: fragmentação ──────────────────────────────────────────────
         frag_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
@@ -1647,7 +1076,8 @@ class Etapa3Frame(ctk.CTkFrame):
         foot = ctk.CTkFrame(main, fg_color='transparent')
         foot.grid(row=7, column=0, sticky='ew')
         self._lbl_status3 = ctk.CTkLabel(foot, text='', font=_font(13),
-                                          text_color=TEXT_SEC)
+                                          text_color=TEXT_SEC, width=560,
+                                          anchor='w')
         self._lbl_status3.pack(side='left')
         self._prog3 = ctk.CTkProgressBar(foot, mode='determinate', width=200,
                                           height=6, progress_color=GREEN, fg_color=DIVIDER)
@@ -1775,9 +1205,16 @@ class Etapa3Frame(ctk.CTkFrame):
             self._aplicar_pasta3(pasta)
 
     def _on_dnd_lista(self, event):
-        paths = self.winfo_toplevel().tk.splitlist(event.data)
+        self._zot_ultimo_drop = (getattr(event, 'type', '?'), str(event.data)[:600])
+        try:
+            paths = self.winfo_toplevel().tk.splitlist(event.data)
+        except Exception:
+            paths = []      # texto de citação não é lista Tcl válida
         pdfs = [p for p in paths if p.lower().endswith('.pdf') and os.path.isfile(p)]
         if not pdfs:
+            if any(os.path.exists(p) for p in paths):
+                return          # arquivo/pasta que não é PDF: ignora, como antes
+            self._zot_soltar_texto(event.data)
             return
         for p in pdfs:
             self._selecao_raw.append({
@@ -1791,6 +1228,190 @@ class Etapa3Frame(ctk.CTkFrame):
             _set_setting('nome_base', os.path.basename(pasta_unica))
         self._rebuild_artigos()
         self._lbl_status3.configure(text=f'{len(pdfs)} PDF(s) adicionado(s)')
+
+    # ── Zotero ──────────────────────────────────────────────────────────────
+
+    def _zot_agendar(self, fn):
+        """after(0) tolerante à janela ter sido fechada no meio da consulta.
+
+        O monitor roda a cada 2,5 s, então fechar o Excerpta com uma consulta
+        em voo é comum — sem isso a thread morre cuspindo TclError no terminal.
+        """
+        try:
+            self.after(0, fn)
+        except Exception:
+            pass
+
+    def _zot_tick(self):
+        """Poll da coleção aberta no Zotero; rede em thread, UI pela fila do Tk."""
+        if self._zot_ocupado or self._zot_importando:
+            self._zot_reagendar()
+            return
+        self._zot_ocupado = True
+
+        def _rodar():
+            estado = None
+            try:
+                estado = zotero_bridge.colecao_selecionada()
+            except Exception:
+                pass
+            self._zot_agendar(lambda e=estado: self._zot_aplicar(e))
+
+        threading.Thread(target=_rodar, daemon=True).start()
+
+    def _zot_aplicar(self, estado):
+        self._zot_ocupado = False
+        if not self._zot_importando:
+            self._zot_estado = estado if estado and estado.get('key') else None
+            if not estado:
+                self._lbl_zot.configure(text='✗  Zotero não conectado',
+                                        text_color=C_WARN)
+                self._btn_zot_importar.pack_forget()
+            elif not estado.get('key'):
+                self._lbl_zot.configure(
+                    text=f'●  {estado["nome"]} — selecione uma coleção no Zotero',
+                    text_color=TEXT_SEC)
+                self._btn_zot_importar.pack_forget()
+            else:
+                n = estado.get('n_itens')
+                self._lbl_zot.configure(
+                    text=f'●  {estado["nome"]}' + (f'  ·  {n} artigo(s)' if n else ''),
+                    text_color=ACCENT_TXT)
+                self._btn_zot_importar.pack(side='right')
+        self._zot_reagendar()
+
+    def _zot_reagendar(self, ms=2500):
+        """Um único timer: reagendar sem cancelar duplicaria a cadeia de polls."""
+        if self._zot_after_id is not None:
+            try:
+                self.after_cancel(self._zot_after_id)
+            except Exception:
+                pass
+        self._zot_after_id = self.after(ms, self._zot_tick)
+
+    def _zot_importar(self):
+        estado = self._zot_estado
+        if not estado or self._zot_importando:
+            return
+        self._zot_importando = True
+        self._btn_zot_importar.configure(state='disabled', text='Importando…')
+        key, nome = estado['key'], estado['nome']
+
+        def _rodar():
+            try:
+                itens = zotero_bridge.listar_itens(
+                    key, on_progresso=lambda c, t: self._zot_agendar(
+                        lambda c=c, t=t: self._lbl_status3.configure(
+                            text=f'Zotero: lendo {c}/{t} itens…')))
+                prontos, problemas = zotero_bridge.resolver_pdfs(itens)
+                r = {'prontos': prontos, 'problemas': problemas, 'nome': nome,
+                     'nome_base': nome}
+            except Exception as exc:
+                r = {'erro': str(exc)}
+            self._zot_agendar(lambda r=r: self._zot_fim_importacao(r))
+
+        threading.Thread(target=_rodar, daemon=True).start()
+
+    def _zot_soltar_texto(self, texto):
+        """Recebe itens arrastados do Zotero e os casa com a biblioteca.
+
+        Arrastar um item **pai** não entrega arquivo nenhum: o Zotero só põe o
+        PDF no arrastar quando o que se arrasta é o próprio anexo
+        (utilities_internal.js filtra por isAttachment). Do item pai vem só o
+        texto do Quick Copy — citação ou JSON —, que aqui é reidentificado na
+        biblioteca por sobrenome + ano, desempatando pelo título.
+        """
+        if not texto or not texto.strip() or self._zot_importando:
+            return
+        self._zot_importando = True
+        self._lbl_status3.configure(text='Zotero: identificando os artigos…')
+
+        def _rodar():
+            try:
+                itens, nao_casadas = zotero_bridge.itens_de_texto_arrastado(
+                    texto,
+                    on_progresso=lambda c, t: self._zot_agendar(
+                        lambda c=c, t=t: self._lbl_status3.configure(
+                            text=f'Zotero: identificando {c}/{t}…')))
+                prontos, problemas = zotero_bridge.resolver_pdfs(itens)
+                resultado = {'prontos': prontos, 'problemas': problemas,
+                             'nome': 'Zotero', 'nao_casadas': nao_casadas,
+                             'manter_nome_base': True}
+            except Exception as exc:
+                resultado = {'erro': str(exc)}
+            self._zot_agendar(lambda r=resultado: self._zot_fim_importacao(r))
+
+        threading.Thread(target=_rodar, daemon=True).start()
+
+    def _zot_fim_importacao(self, resultado):
+        self._zot_importando = False
+        self._btn_zot_importar.configure(state='normal', text='Importar PDFs')
+
+        if resultado.get('erro'):
+            self._lbl_status3.configure(text='')
+            messagebox.showerror('Zotero', resultado['erro'])
+            return
+
+        prontos   = resultado['prontos']
+        problemas = resultado['problemas']
+        nome      = resultado['nome']
+
+        ja_na_lista = {item.get('caminho_completo') for item in self._selecao_raw}
+        novos     = [p for p in prontos if p['caminho_completo'] not in ja_na_lista]
+        repetidos = len(prontos) - len(novos)
+
+        if novos:
+            self._selecao_raw.extend(novos)
+            if resultado.get('nome_base'):
+                _set_setting('nome_base', resultado['nome_base'])
+            self._rebuild_artigos()
+
+        self._lbl_status3.configure(
+            text=f'✓  {len(novos)} PDF(s) importado(s) do Zotero — "{nome}"')
+
+        if not novos and not prontos:
+            tipo, bruto = getattr(self, '_zot_ultimo_drop', ('?', ''))
+            messagebox.showinfo(
+                'Arrastar do Zotero',
+                'Não consegui identificar nenhum artigo no que foi arrastado.'
+                '\n\n'
+                'Ao arrastar um item do Zotero vêm apenas os metadados, no '
+                'formato configurado em Zotero → Configurações → Exportar → '
+                'Formato do item. O Excerpta usa autor e ano para reencontrar '
+                'o artigo na sua biblioteca.\n\n'
+                'Use o campo "Etiqueta do Zotero" como alternativa: etiquete '
+                'os artigos no Zotero e importe por ali.\n\n'
+                '─────────────────────────────\n'
+                f'Diagnóstico — tipo recebido: {tipo}\n'
+                f'Conteúdo recebido:\n{bruto[:400] or "(vazio)"}')
+            return
+
+        linhas = []
+        nao_casadas = resultado.get('nao_casadas') or []
+        if nao_casadas:
+            linhas.append(
+                f'{len(nao_casadas)} referência(s) não foram identificadas na '
+                'biblioteca do Zotero e ficaram de fora.')
+        if repetidos:
+            linhas.append(f'{repetidos} já estava(m) na lista e não '
+                          'foram adicionados de novo.')
+        if problemas['sem_pdf']:
+            linhas.append(f'{len(problemas["sem_pdf"])} item(ns) sem PDF anexado '
+                          'no Zotero.')
+        if problemas['sem_arquivo']:
+            linhas.append(
+                f'{len(problemas["sem_arquivo"])} item(ns) têm PDF registrado no '
+                'Zotero, mas o arquivo não está neste computador — sincronize '
+                'os anexos no Zotero e importe de novo.')
+        if problemas['multiplos']:
+            linhas.append(
+                f'{len(problemas["multiplos"])} item(ns) tinham mais de um PDF; '
+                'foi importado o anexo principal de cada um.')
+        if linhas:
+            messagebox.showinfo(
+                'Importação do Zotero',
+                f'{len(novos)} PDF(s) importado(s) de "{nome}".\n\n'
+                + '\n\n'.join(f'• {l}' for l in linhas))
 
     def _rebuild_artigos(self):
         if not self._selecao_raw:
@@ -1807,13 +1428,27 @@ class Etapa3Frame(ctk.CTkFrame):
                 'caminho': caminho, 'encontrado': encontrado,
             })
 
-        vistos = set()
-        duplicatas = set()
+        nomes_vistos  = set()
+        hashes_vistos = set()
+        duplicatas    = set()
         for art in self._selecao:
             nome = art['arquivo']
-            if nome in vistos:
+            e_dup = nome in nomes_vistos
+            if not e_dup and art['encontrado']:
+                h = _hash_arquivo(art['caminho'], self._hash_cache)
+                if h:
+                    if h in hashes_vistos:
+                        e_dup = True
+                    else:
+                        hashes_vistos.add(h)
+            if e_dup:
                 duplicatas.add(nome)
-            vistos.add(nome)
+            nomes_vistos.add(nome)
+        self._duplicatas_atuais = duplicatas
+        self._grupos_possiveis_duplicatas = _detectar_grupos_possiveis_duplicatas(
+            self._selecao, self._hash_cache, duplicatas)
+        self._possiveis_duplicatas = {
+            nome for grupo in self._grupos_possiveis_duplicatas for nome in grupo}
 
         for w in self._frame_arts.winfo_children():
             w.destroy()
@@ -1822,8 +1457,11 @@ class Etapa3Frame(ctk.CTkFrame):
         n_err = len(self._selecao) - n_ok
 
         for i, art in enumerate(self._selecao):
-            e_dup  = art['arquivo'] in duplicatas
-            row_bg = '#FFF7ED' if e_dup else (BG_CARD if i % 2 == 0 else '#F7F8FA')
+            e_dup      = art['arquivo'] in duplicatas
+            e_possivel = art['arquivo'] in self._possiveis_duplicatas
+            row_bg = ('#FFF7ED' if e_dup else
+                      ACCENT_LT if e_possivel else
+                      (BG_CARD if i % 2 == 0 else '#F7F8FA'))
             linha  = ctk.CTkFrame(self._frame_arts, fg_color=row_bg,
                                   corner_radius=0, height=38)
             linha.pack(fill='x', padx=0)
@@ -1837,12 +1475,16 @@ class Etapa3Frame(ctk.CTkFrame):
                         ).pack(side='left', padx=(12, 4))
 
             nome_exib = art['arquivo'] if len(art['arquivo']) <= 52 else art['arquivo'][:49] + '…'
+            cor_nome = C_WARN if e_dup else (ACCENT_TXT if e_possivel else TEXT_PRI)
             ctk.CTkLabel(linha, text=nome_exib,
-                        font=_font(13, 'bold'), text_color=C_WARN if e_dup else TEXT_PRI,
+                        font=_font(13, 'bold'), text_color=cor_nome,
                         anchor='w').pack(side='left', padx=(0, 8))
             if e_dup:
                 ctk.CTkLabel(linha, text='duplicata', text_color=C_WARN,
                             font=_font(11)).pack(side='left')
+            elif e_possivel:
+                ctk.CTkLabel(linha, text='possível duplicata — revisar',
+                            text_color=ACCENT_TXT, font=_font(11)).pack(side='left')
 
             if art['encontrado']:
                 lbl_engine = ctk.CTkLabel(linha, text='…', font=_font(10),
@@ -1860,6 +1502,9 @@ class Etapa3Frame(ctk.CTkFrame):
             resumo += f'  ·  ⚠ {n_err} não encontrado(s)'
         if duplicatas:
             resumo += f'  ·  ⚠ {len(duplicatas)} duplicata(s)'
+        if self._possiveis_duplicatas:
+            resumo += (f'  ·  {len(self._possiveis_duplicatas)} '
+                       'possível(is) duplicata(s) — revisar')
         self._lbl_resumo.configure(text=resumo)
 
         self._btn_extrair.configure(
@@ -1872,6 +1517,12 @@ class Etapa3Frame(ctk.CTkFrame):
             self._btn_rem_dup3.pack(side='right', padx=(0, 6))
         else:
             self._btn_rem_dup3.pack_forget()
+        if self._possiveis_duplicatas:
+            self._btn_revisar_poss3.configure(
+                text=f'Revisar possíveis duplicatas ({len(self._grupos_possiveis_duplicatas)})')
+            self._btn_revisar_poss3.pack(side='right', padx=(0, 6))
+        else:
+            self._btn_revisar_poss3.pack_forget()
         self._btn_limpar.pack(side='right')
         self._atualizar_preview_fragmentos()
 
@@ -1959,17 +1610,113 @@ class Etapa3Frame(ctk.CTkFrame):
         self._frame_analise.grid()
 
     def _remover_duplicatas_e3(self):
-        vistos = set()
-        nova_selecao = []
-        for item in self._selecao_raw:
-            if item['arquivo'] not in vistos:
-                nova_selecao.append(item)
-                vistos.add(item['arquivo'])
-        removidos = len(self._selecao_raw) - len(nova_selecao)
-        self._selecao_raw = nova_selecao
+        self._rebuild_artigos()  # garante self._duplicatas_atuais em dia
+        duplicatas = self._duplicatas_atuais
+        nova_selecao_raw = [item for item in self._selecao_raw
+                             if item['arquivo'] not in duplicatas]
+        removidos = len(self._selecao_raw) - len(nova_selecao_raw)
+        self._selecao_raw = nova_selecao_raw
         self._rebuild_artigos()
         self._lbl_status3.configure(
             text=f'✓  {removidos} entrada(s) duplicada(s) removida(s)')
+
+    def _abrir_revisao_possiveis_duplicatas(self):
+        self._rebuild_artigos()  # garante que os grupos estão em dia
+        grupos = [g for g in self._grupos_possiveis_duplicatas if len(g) > 1]
+        if not grupos:
+            return
+
+        by_nome = {a['arquivo']: a for a in self._selecao}
+
+        def tam_kb(nome):
+            try:
+                return os.path.getsize(by_nome[nome]['caminho']) / 1024
+            except OSError:
+                return 0.0
+
+        win = ctk.CTkToplevel(self)
+        win.title('Revisar possíveis duplicatas')
+        win.resizable(False, False)
+        win.withdraw()
+
+        ctk.CTkLabel(win, text=f'{len(grupos)} grupo(s) de possível duplicata',
+                     font=_font(15, 'bold'), text_color=TEXT_PRI
+                     ).pack(padx=20, pady=(16, 2), anchor='w')
+        ctk.CTkLabel(win,
+                     text='Mesmo título, provavelmente truncado em pontos diferentes\n'
+                          '— o conteúdo não é idêntico byte a byte, por isso não foi\n'
+                          'removido automaticamente. O maior arquivo de cada grupo já\n'
+                          'fica desmarcado (mantido); os demais vêm marcados para\n'
+                          'remoção — revise antes de confirmar.',
+                     font=_font(11), text_color=TEXT_SEC, anchor='w', justify='left'
+                     ).pack(padx=20, pady=(0, 10), anchor='w')
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color=BG_WINDOW, width=560, height=340)
+        scroll.pack(fill='both', expand=True, padx=20, pady=(0, 10))
+
+        checkboxes = {}  # arquivo -> BooleanVar
+        for gi, grupo in enumerate(grupos):
+            card = ctk.CTkFrame(scroll, fg_color=BG_CARD, border_color=DIVIDER,
+                                 border_width=1, corner_radius=8)
+            card.pack(fill='x', pady=(0, 10))
+            ctk.CTkLabel(card, text=f'Grupo {gi + 1}', font=_font(11, 'bold'),
+                         text_color=ACCENT_TXT, anchor='w'
+                         ).pack(fill='x', padx=12, pady=(8, 2))
+
+            nomes_ordenados = sorted(grupo, key=tam_kb, reverse=True)
+            for idx, nome in enumerate(nomes_ordenados):
+                # primeiro (maior arquivo) fica mantido por padrão; os demais já
+                # vêm marcados pra remoção, pra facilitar — o usuário só revisa.
+                var = ctk.BooleanVar(value=(idx > 0))
+                checkboxes[nome] = var
+                row = ctk.CTkFrame(card, fg_color='transparent')
+                row.pack(fill='x', padx=12, pady=2)
+                ctk.CTkCheckBox(row, text='', variable=var, width=20,
+                                checkmark_color='white', fg_color=C_WARN,
+                                hover_color='#8B3A00', border_color=GRAY_BORD
+                                ).pack(side='left')
+                nome_exib = nome if len(nome) <= 46 else nome[:43] + '…'
+                ctk.CTkLabel(row, text=nome_exib, font=_font(12),
+                            text_color=TEXT_PRI, anchor='w'
+                            ).pack(side='left', padx=(4, 8))
+                ctk.CTkButton(row, text='Abrir', width=56, height=24,
+                             fg_color=BG_PANEL, hover_color=ACCENT_LT,
+                             text_color=ACCENT, font=_font(11),
+                             border_width=1, border_color=ACCENT_BORD,
+                             command=lambda c=by_nome[nome]['caminho']: abrir_no_sistema(c)
+                             ).pack(side='right')
+                ctk.CTkLabel(row, text=f'{tam_kb(nome):,.0f} KB', font=_font(11),
+                            text_color=TEXT_SEC, width=70, anchor='e'
+                            ).pack(side='right', padx=(0, 6))
+            ctk.CTkFrame(card, fg_color='transparent', height=4).pack()
+
+        def _aplicar():
+            selecionados = {nome for nome, var in checkboxes.items() if var.get()}
+            if selecionados:
+                self._selecao_raw = [item for item in self._selecao_raw
+                                     if item['arquivo'] not in selecionados]
+                self._rebuild_artigos()
+                self._lbl_status3.configure(
+                    text=f'✓  {len(selecionados)} possível(is) duplicata(s) removida(s)')
+            win.destroy()
+
+        btns = ctk.CTkFrame(win, fg_color='transparent')
+        btns.pack(fill='x', padx=20, pady=(0, 16))
+        ctk.CTkButton(btns, text='Fechar', width=90, height=32,
+                     fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                     text_color=TEXT_PRI, font=_font(13),
+                     command=win.destroy).pack(side='left')
+        ctk.CTkButton(btns, text='Remover selecionados', width=180, height=32,
+                     fg_color=C_WARN, hover_color='#8B3A00',
+                     text_color='white', font=_font(13, 'bold'),
+                     command=_aplicar).pack(side='right')
+
+        win.update_idletasks()
+        win.geometry('620x630')
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+        win.after(50, win.grab_set)
 
     def _limpar_lista(self):
         self._selecao_raw = []
@@ -1989,6 +1736,7 @@ class Etapa3Frame(ctk.CTkFrame):
         self._lbl_status3.configure(text='')
         self._lbl_preview_frags.configure(text='')
         self._btn_rem_dup3.pack_forget()
+        self._btn_revisar_poss3.pack_forget()
         self._btn_limpar.pack_forget()
         self._btn_extrair.configure(state='disabled')
 
@@ -2047,11 +1795,12 @@ class Etapa3Frame(ctk.CTkFrame):
         self._prog3.pack(side='left', padx=(10, 0))
         usar_ocr = _get_setting('usar_ocr', True)
         usar_ia_local = _get_setting('usar_ia_local', False)
+        log_diagnostico = _get_setting('log_diagnostico', True)
         threading.Thread(
             target=self._extrair_worker,
             args=(prontos, path, secoes_cfg, fallback_cfg, incluir_supl,
                   usar_ocr, fragmentar, frag_nome, frag_kb, fmt,
-                  dict(getattr(self, '_tipos_pdf', {})), usar_ia_local),
+                  dict(getattr(self, '_tipos_pdf', {})), usar_ia_local, log_diagnostico),
             daemon=True).start()
 
     def _cancelar_extracao(self):
@@ -2061,214 +1810,54 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _extrair_worker(self, artigos, path_saida, secoes_cfg, fallback_cfg,
                         incluir_supl, usar_ocr, fragmentar, frag_nome, frag_kb, fmt='txt',
-                        tipos_pdf=None, usar_ia_local=False):
-        tipos_pdf = tipos_pdf or {}
-        blocos = []
-        stats  = {'completos': 0, 'adaptados': 0, 'reviews': 0,
-                  'ignorados': 0, 'erros': 0}
-        total       = len(artigos)
-        processados = 0
+                        tipos_pdf=None, usar_ia_local=False, log_diagnostico=True):
+        """Adapta os callbacks de extracao.executar para a Tk main thread."""
 
-        def _kb(art):
-            try:
-                return max(1.0, os.path.getsize(art['caminho']) / 1024)
-            except OSError:
-                return 2048.0
-
-        kbs = [_kb(a) for a in artigos]
-
-        def _peso(idx):
-            tipo = tipos_pdf.get(artigos[idx]['arquivo'], 'digital')
-            rate = _TAXA_OCR_S_KB if (tipo == 'escaneado' and usar_ocr) else _TAXA_DIGITAL_S_KB
-            return kbs[idx] * rate
-
-        pesos         = [_peso(j) for j in range(total)]
-        peso_total    = sum(pesos) or 1.0
-        peso_acum     = 0.0
-        taxa_dig_real = []   # taxas reais em s/KB para PDFs digitais
-        taxa_ocr_real = []   # taxas reais em s/KB para PDFs OCR
-
-        for i, art in enumerate(artigos, 1):
-            if self._cancelando:
-                break
-
-            pct = peso_acum / peso_total
-
-            # Taxas calibradas: usa médias reais se já houver amostras
-            taxa_ref_dig = ((sum(taxa_dig_real) / len(taxa_dig_real))
-                            if taxa_dig_real else _TAXA_DIGITAL_S_KB)
-            taxa_ref_ocr = ((sum(taxa_ocr_real) / len(taxa_ocr_real))
-                            if taxa_ocr_real else _TAXA_OCR_S_KB)
-
-            # Tempo restante = taxa calibrada × tamanho real de cada artigo pendente
-            t_rest = sum(
-                taxa_ref_ocr * kbs[j]
-                if (tipos_pdf.get(artigos[j]['arquivo'], 'digital') == 'escaneado' and usar_ocr)
-                else taxa_ref_dig * kbs[j]
-                for j in range(i - 1, total)
-            )
-            t_str = f'{t_rest:.0f}s' if t_rest < 60 else f'{t_rest / 60:.1f}min'
-            status_txt = f'Extraindo {i}/{total}: {art["arquivo"]} · ~{t_str} restantes'
-
-            self.after(0, lambda t=status_txt, p=pct: (
+        def _on_status(texto, pct):
+            self.after(0, lambda t=texto, p=pct: (
                 self._lbl_status3.configure(text=t),
                 self._prog3.set(p)
             ))
 
-            t_art_inicio = time.time()
-            partes       = []
-            secoes_usadas = secoes_cfg[:]
+        def _on_progresso(pct):
+            self.after(0, lambda p=pct: self._prog3.set(p))
 
-            try:
-                # Detecção antecipada de PDF inteiramente suplementar
-                if not incluir_supl and _e_suplementar_integral(art['caminho']):
-                    stats['ignorados'] += 1
-                    blocos.append(
-                        '--- INICIO ARTIGO ---\n'
-                        f'ARQUIVO_ORIGINAL: {art["arquivo"]}\n'
-                        f'STATUS: IGNORADO — material suplementar integral\n'
-                        f'--- FIM ARTIGO ---'
-                    )
-                    peso_acum += pesos[i - 1]
-                    processados += 1
-                    continue
+        def _on_concluido(path, n, stats, log_path):
+            self.after(0, lambda p=path, t=n, s=stats, dl=log_path:
+                       self._extracao_concluida(p, t, s, dl))
 
-                # Opt-out de OCR: pular PDFs escaneados se usuário desativou
-                if not usar_ocr and detectar_tipo_pdf(art['caminho']) == 'escaneado':
-                    stats['ignorados'] += 1
-                    blocos.append(
-                        '--- INICIO ARTIGO ---\n'
-                        f'ARQUIVO_ORIGINAL: {art["arquivo"]}\n'
-                        f'STATUS: IGNORADO — PDF escaneado (OCR desativado pelo usuário)\n'
-                        f'--- FIM ARTIGO ---'
-                    )
-                    peso_acum += pesos[i - 1]
-                    processados += 1
-                    continue
+        def _on_concluido_frag(pasta, n, n_frags, kb_frags, stats, log_path):
+            self.after(0, lambda p=pasta, t=n, nf=n_frags, kb=kb_frags,
+                       s=stats, dl=log_path:
+                       self._extracao_concluida_frag(p, t, nf, kb, s, dl))
 
-                md, _ = converter_pdf(art['caminho'])
+        def _on_erro_salvar(exc):
+            self.after(0, lambda e=exc: messagebox.showerror('Erro ao salvar', str(e)))
 
-                if 'tudo' in secoes_cfg:
-                    partes.append(md)
-                    stats['completos'] += 1
-                else:
-                    incluir_refs = 'referencias' in secoes_cfg
+        def _on_fim(cancelado, processados, total):
+            def _done():
+                self._prog3.pack_forget()
+                self._btn_extrair.configure(
+                    text='↓  Extrair artigos', fg_color=GREEN, hover_color=GREEN_HOV,
+                    command=self._extrair, state='normal')
+                if cancelado:
+                    self._lbl_status3.configure(
+                        text=f'Cancelado — {processados} de {total} artigo(s) processado(s)')
 
-                    # Mudança 2: detecção de review
-                    if _e_review(art['caminho'], md):
-                        excluir_rev = set()
-                        if not incluir_refs:
-                            excluir_rev.add('referencias')
-                        if not incluir_supl:
-                            excluir_rev.add('suplementar')
-                        conteudo_rev = _md_remover_secoes(md, excluir_rev) if excluir_rev else md
-                        partes.append(f'[REVIEW — artigo entregue completo]\n\n{conteudo_rev}')
-                        secoes_usadas = ['review (artigo completo)']
-                        stats['reviews'] += 1
-                    else:
-                        # Mudança 3: extração com suporte a compostos
-                        encontradas, nao_encontradas, partes_sec = _extrair_secoes(md, secoes_cfg)
-                        partes.extend(partes_sec)
+            self.after(0, _done)
 
-                        # Fallback via IA local (Ollama): só roda se o regex/fuzzy
-                        # deixou seções sem encontrar e a opção está ligada nas
-                        # configurações. Falha silenciosa -> segue pro fallback antigo.
-                        if nao_encontradas and usar_ia_local:
-                            partes_ia, encontradas_ia = _fallback_secoes_ia(md, nao_encontradas)
-                            if encontradas_ia:
-                                partes.extend(partes_ia)
-                                encontradas = encontradas + encontradas_ia
-                                nao_encontradas = [s for s in nao_encontradas
-                                                    if s not in encontradas_ia]
-
-                        # Mudança 1: fallback = artigo completo menos seções já extraídas
-                        if nao_encontradas and fallback_cfg:
-                            excluir_fb = set(encontradas)
-                            if not incluir_refs:
-                                excluir_fb.add('referencias')
-                            if not incluir_supl:
-                                excluir_fb.add('suplementar')
-                            resto = _md_remover_secoes(md, excluir_fb)
-                            nomes = ', '.join(nao_encontradas)
-                            if resto.strip():
-                                partes.append(
-                                    f'[RESTANTE — {nomes} não detectados separadamente]\n\n{resto}')
-                            secoes_usadas = (encontradas + ['restante (fallback)']
-                                             if encontradas else ['tudo (fallback)'])
-                            stats['adaptados'] += 1
-                        elif not encontradas:
-                            partes.append('[Nenhuma seção detectada — artigo não extraído]')
-                            stats['adaptados'] += 1
-                        elif nao_encontradas:
-                            secoes_usadas = encontradas
-                            nomes = ', '.join(nao_encontradas)
-                            partes.insert(0, f'[Seções não encontradas: {nomes}]')
-                            stats['adaptados'] += 1
-                        else:
-                            secoes_usadas = encontradas
-                            stats['completos'] += 1
-
-            except Exception as exc:
-                partes.append(f'[ERRO ao extrair: {exc}]')
-                stats['erros'] += 1
-
-            blocos.append(
-                '--- INICIO ARTIGO ---\n'
-                f'ARQUIVO_ORIGINAL: {art["arquivo"]}\n'
-                f'SECOES_EXTRAIDAS: {", ".join(secoes_usadas)}\n\n'
-                + '\n\n'.join(partes)
-                + '\n--- FIM ARTIGO ---'
-            )
-            t_art    = time.time() - t_art_inicio
-            tipo_art = tipos_pdf.get(art['arquivo'], 'digital')
-            taxa_art = t_art / kbs[i - 1]
-            if tipo_art == 'escaneado' and usar_ocr:
-                taxa_ocr_real.append(taxa_art)
-            else:
-                taxa_dig_real.append(taxa_art)
-            peso_acum += pesos[i - 1]
-            processados += 1
-
-        cancelado = self._cancelando
-        self.after(0, lambda: self._prog3.set(1.0))
-
-        if blocos:
-            try:
-                if fragmentar:
-                    fragmentos = _fragmentar_blocos(blocos, frag_kb)
-                    n_frags    = len(fragmentos)
-                    kb_frags   = [sum(len(b.encode('utf-8')) for b in f) / 1024
-                                   for f in fragmentos]
-                    for j, frag in enumerate(fragmentos, 1):
-                        nome_arq = os.path.join(path_saida, f'{frag_nome}_{j}.{fmt}')
-                        with open(nome_arq, 'w', encoding='utf-8') as f:
-                            f.write('\n\n'.join(frag))
-                    if not cancelado:
-                        _st = dict(stats); _st['total'] = processados
-                        self.after(0, lambda p=path_saida, t=processados, n=n_frags,
-                                   kb=kb_frags, s=_st:
-                                   self._extracao_concluida_frag(p, t, n, kb, s))
-                else:
-                    conteudo = '\n\n'.join(blocos)
-                    with open(path_saida, 'w', encoding='utf-8') as f:
-                        f.write(conteudo)
-                    if not cancelado:
-                        _st = dict(stats); _st['total'] = processados
-                        self.after(0, lambda s=_st:
-                                   self._extracao_concluida(path_saida, processados, s))
-            except Exception as exc:
-                self.after(0, lambda e=exc: messagebox.showerror('Erro ao salvar', str(e)))
-
-        def _done():
-            self._prog3.pack_forget()
-            self._btn_extrair.configure(
-                text='↓  Extrair artigos', fg_color=GREEN, hover_color=GREEN_HOV,
-                command=self._extrair, state='normal')
-            if cancelado:
-                self._lbl_status3.configure(
-                    text=f'Cancelado — {processados} de {total} artigo(s) processado(s)')
-
-        self.after(0, _done)
+        extracao.executar(
+            artigos, path_saida, secoes_cfg, fallback_cfg, incluir_supl,
+            usar_ocr, fragmentar, frag_nome, frag_kb, fmt,
+            tipos_pdf, usar_ia_local, log_diagnostico,
+            deve_cancelar=lambda: self._cancelando,
+            on_status=_on_status,
+            on_progresso=_on_progresso,
+            on_concluido=_on_concluido,
+            on_concluido_frag=_on_concluido_frag,
+            on_erro_salvar=_on_erro_salvar,
+            on_fim=_on_fim,
+        )
 
     def _mostrar_ajuda_fragmentar(self):
         MODELOS = [
@@ -2311,6 +1900,8 @@ class Etapa3Frame(ctk.CTkFrame):
                 if not self._var_fragmentar.get():
                     self._var_fragmentar.set(True)
                     self._on_fragmentar_toggle()
+                else:
+                    self._atualizar_preview_fragmentos()
                 win.destroy()
 
             ctk.CTkButton(row, text='Usar', width=52, height=26,
@@ -2333,21 +1924,24 @@ class Etapa3Frame(ctk.CTkFrame):
     def _abrir_settings(self):
         SettingsDialog(self)
 
-    def _extracao_concluida(self, path_saida, total, stats):
+    def _extracao_concluida(self, path_saida, total, stats, debug_log_path=None):
         self._lbl_status3.configure(text=f'✓  {total} artigo(s) extraídos')
         if _get_setting('mostrar_resumo', True):
-            StatsWindow(self, stats, path_saida, fragmentado=False)
+            StatsWindow(self, stats, path_saida, fragmentado=False,
+                        debug_log_path=debug_log_path)
         elif _get_setting('perguntar_abrir_pasta', True):
             if messagebox.askyesno('Concluído',
                                    f'Extração salva em:\n{path_saida}\n\nAbrir a pasta?'):
                 abrir_no_sistema(os.path.dirname(path_saida))
 
-    def _extracao_concluida_frag(self, pasta, total_arts, n_frags, kb_frags, stats):
+    def _extracao_concluida_frag(self, pasta, total_arts, n_frags, kb_frags, stats,
+                                  debug_log_path=None):
         self._lbl_status3.configure(
             text=f'✓  {total_arts} artigo(s) → {n_frags} arquivo(s)')
         if _get_setting('mostrar_resumo', True):
             StatsWindow(self, stats, pasta,
-                        fragmentado=True, n_frags=n_frags, kb_frags=kb_frags)
+                        fragmentado=True, n_frags=n_frags, kb_frags=kb_frags,
+                        debug_log_path=debug_log_path)
         elif _get_setting('perguntar_abrir_pasta', True):
             resumo = '  |  '.join(f'parte {i+1}: ~{kb:.0f} KB'
                                    for i, kb in enumerate(kb_frags))
@@ -2376,8 +1970,3 @@ class ExcerptaApp(ctk.CTk):
 
         frame = Etapa3Frame(self, self)
         frame.pack(fill='both', expand=True)
-
-
-if __name__ == '__main__':
-    app = ExcerptaApp()
-    app.mainloop()

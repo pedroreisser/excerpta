@@ -132,12 +132,12 @@ exit /b 1
 echo.
 echo  Iniciando Excerpta...
 echo.
-!PYTHON! iniciar_extrator.py
+!PYTHON! iniciar.py
 if !errorlevel! neq 0 (
     echo.
     echo  Ocorreu um erro ao iniciar o Excerpta.
     echo  Tente executar manualmente no terminal:
-    echo    python iniciar_extrator.py
+    echo    python iniciar.py
     echo.
     pause
 )

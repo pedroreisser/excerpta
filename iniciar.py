@@ -20,7 +20,8 @@ DEPS_OBRIGATORIAS = [
 # instalar dentro do próprio Excerpta, em Configurações — não bloqueiam a
 # abertura do programa nem aparecem aqui no launcher.
 
-SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "excerpta.py")
+SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "codigo", "excerpta.py")
 IS_WIN   = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -351,7 +352,7 @@ if __name__ == "__main__":
             # Python (marcado por padrão em "tcl/tk and IDLE"); se faltar,
             # não dá pra instalar via pip — precisa reinstalar o Python.
             # Cair pro modo console não adianta: customtkinter (usado pelo
-            # excerpta.py) também depende do tkinter e falharia do mesmo jeito.
+            # codigo/gui.py) também depende do tkinter e falharia do mesmo jeito.
             print("tkinter não está disponível nesta instalação do Python.")
             print()
             print("Reinstale o Python marcando a opção \"tcl/tk and IDLE\":")

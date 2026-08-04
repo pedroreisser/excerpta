@@ -2,7 +2,7 @@
 
 Ferramenta desktop para extração seletiva de seções de artigos científicos em PDF.
 
-Selecione uma pasta com PDFs, escolha quais seções quer extrair (abstract, métodos, resultados…) e o Excerpta gera um único arquivo de texto com o conteúdo de todos os artigos.
+Selecione uma pasta com PDFs — ou importe direto do Zotero — escolha quais seções quer extrair (abstract, métodos, resultados…) e o Excerpta gera um único arquivo de texto com o conteúdo de todos os artigos.
 
 ---
 
@@ -20,7 +20,7 @@ Selecione uma pasta com PDFs, escolha quais seções quer extrair (abstract, mé
 
 **Linux/Mac** — execute no terminal:
 ```bash
-python3 iniciar_extrator.py
+python3 iniciar.py
 ```
 
 Na primeira execução o programa instala automaticamente as dependências obrigatórias (rápido, ~50 MB) e já abre o Excerpta. Não é necessário ser administrador.
@@ -37,6 +37,16 @@ Na primeira execução o programa instala automaticamente as dependências obrig
 | `docling` *(opcional)* | ~2 GB | OCR para PDFs escaneados |
 
 O `docling` só é necessário para PDFs sem texto nativo (escaneados). Não é instalado pelo launcher — instale quando precisar em **Configurações → Geral**, dentro do próprio Excerpta (botão "Instalar suporte a OCR"). O mesmo vale para a IA local opcional (Ollama), disponível em **Configurações → IA local (Ollama)**.
+
+---
+
+## Integração com o Zotero
+
+Com o Zotero aberto, o Excerpta acompanha a coleção selecionada nele e importa os PDFs com um clique. Para levar só alguns artigos, selecione-os no Zotero e arraste para a lista do Excerpta — o item pai não carrega o arquivo, então o Excerpta reencontra cada artigo na biblioteca por autor, ano e título.
+
+Requer, no Zotero, **Editar → Configurações → Avançado → "Allow other applications on this computer to communicate with Zotero"**. A comunicação é pela API HTTP local (`127.0.0.1:23119`), **somente leitura** — o Excerpta nunca escreve na biblioteca. Não exige nenhuma dependência adicional.
+
+Itens sem PDF anexado, ou com PDF ainda não baixado para a máquina, são relatados ao fim da importação. Quando um item tem mais de um PDF, é importado o anexo principal.
 
 ---
 
@@ -70,14 +80,30 @@ Artigos em que uma seção não é encontrada aparecem no resultado como **compl
 
 ## Arquivos do projeto
 
+Na raiz fica só o que o usuário precisa para instalar e abrir o programa:
+
 | Arquivo | Descrição |
 |---|---|
-| `excerpta.py` | Aplicação principal (interface e lógica de extração) |
-| `iniciar_extrator.py` | Launcher: instala dependências e abre a aplicação |
+| `iniciar.py` | Launcher: instala dependências e abre a aplicação |
 | `Instalar dependências (Windows 11).bat` | Entrada para Windows (chama o launcher) |
 | `INSTRUCOES.txt` | Instruções para usuários finais |
+| `README.md` | Este arquivo |
 
-Arquivos gerados localmente (não versionados):
+O código da aplicação fica em `codigo/`:
+
+| Arquivo | Descrição |
+|---|---|
+| `excerpta.py` | Ponto de entrada (abre a janela) |
+| `gui.py` | Interface: janela principal, configurações, resumo pós-extração |
+| `extracao.py` | Pipeline de extração e gravação dos arquivos de saída |
+| `secoes.py` | Identificação das seções: cabeçalhos, fuzzy, fallbacks, IA local |
+| `motor_pdf.py` | Motores de extração e detecção do tipo de PDF |
+| `duplicatas.py` | Detecção de duplicatas por hash e por nome truncado |
+| `zotero_bridge.py` | Leitura da biblioteca do Zotero pela API HTTP local |
+| `config.py` | Preferências e histórico de pastas recentes |
+| `log.py` | Log técnico de diagnóstico (`excerpta_debug.log`) |
+
+Arquivos gerados localmente em `codigo/` (não versionados):
 
 | Arquivo | Descrição |
 |---|---|

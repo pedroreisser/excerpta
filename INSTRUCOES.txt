@@ -16,7 +16,7 @@ Windows:
 
 Linux/Mac:
   Abra o terminal nesta pasta e execute:
-    python3 iniciar_extrator.py
+    python3 iniciar.py
 
 
 NA PRIMEIRA EXECUÇÃO
@@ -41,6 +41,28 @@ O Excerpta extrai seções de artigos científicos em PDF.
      ou deixe "Artigo completo" marcado
   4. Clique em "Extrair artigos"
   5. Salve o arquivo de texto gerado
+
+Você também pode arrastar PDFs soltos para a lista de artigos.
+
+
+USAR COM O ZOTERO (opcional)
+────────────────────────────
+Se o Zotero estiver aberto, o Excerpta mostra a coleção que você tem
+selecionada nele e importa os PDFs dela com um clique.
+
+  • Coleção inteira: selecione a coleção no Zotero. A linha "Zotero" no
+    Excerpta mostra o nome e a quantidade — clique em "Importar PDFs".
+
+  • Alguns artigos só: selecione-os no Zotero (Ctrl+clique) e arraste
+    para a lista de artigos do Excerpta.
+
+Requisito: no Zotero, em Editar → Configurações → Avançado, marque
+"Allow other applications on this computer to communicate with Zotero".
+Sem isso o Excerpta mostra "Zotero não conectado".
+
+O Excerpta só lê a biblioteca do Zotero — nunca altera nada nela.
+Artigos sem PDF anexado, ou cujo PDF ainda não foi baixado para este
+computador, são informados ao fim da importação.
 
 
 DÚVIDAS / PROBLEMAS
