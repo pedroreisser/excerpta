@@ -42,7 +42,15 @@ def _set_setting(chave, valor):
 
 OLLAMA_URL_PADRAO    = 'http://localhost:11434'
 OLLAMA_MODELO_PADRAO = 'qwen2.5:7b-instruct'
-OLLAMA_TIMEOUT_S     = 25
+# Uma chamada com ~15k caracteres de contexto leva ~2 min num 7B em CPU
+# comum — os 25 s antigos estouravam sempre, e o erro era engolido em
+# silêncio. Ajustável na GUI, porque o tempo varia muito com o hardware.
+OLLAMA_TIMEOUT_S     = 180
+# Mantém o modelo carregado entre artigos. O padrão do Ollama é 5 min, e o
+# maior intervalo medido entre duas chamadas num lote real foi de 4 min —
+# perto demais: um trecho de artigos que não precisam da IA descarregaria o
+# modelo e a chamada seguinte pagaria o recarregamento dentro do timeout.
+OLLAMA_KEEP_ALIVE    = '30m'
 OLLAMA_INSTALL_CMD   = 'curl -fsSL https://ollama.com/install.sh | sh'
 OLLAMA_DOWNLOAD_URL  = 'https://ollama.com/download'
 

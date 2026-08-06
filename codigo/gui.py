@@ -6,14 +6,14 @@ import sys
 import subprocess
 import shutil
 import time
-import urllib.request
 import webbrowser
 
 import extracao
+import ollama_bridge
 import zotero_bridge
 from config import (
     OLLAMA_DOWNLOAD_URL, OLLAMA_INSTALL_CMD, OLLAMA_MODELO_PADRAO,
-    OLLAMA_URL_PADRAO,
+    OLLAMA_TIMEOUT_S, OLLAMA_URL_PADRAO,
     _get_setting, _gravar_recente, _ler_recentes, _ler_settings,
     _salvar_settings, _set_setting,
 )
@@ -485,24 +485,75 @@ class SettingsDialog(ctk.CTkToplevel):
         row_modelo.pack(fill='x')
         ctk.CTkLabel(row_modelo, text='Modelo:', font=_font(12),
                      text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
-        self._entry_ollama_modelo = ctk.CTkEntry(row_modelo, width=220, height=30,
-                                                  font=_font(12))
-        self._entry_ollama_modelo.insert(0, cfg.get('ollama_modelo', OLLAMA_MODELO_PADRAO))
+        # Combobox editável: lista os modelos já instalados (via /api/tags),
+        # mas aceita digitar qualquer nome do catálogo do Ollama pra baixar.
+        self._entry_ollama_modelo = ctk.CTkComboBox(row_modelo, width=220, height=30,
+                                                     font=_font(12), values=[])
+        self._entry_ollama_modelo.set(cfg.get('ollama_modelo', OLLAMA_MODELO_PADRAO))
         self._entry_ollama_modelo.pack(side='left')
+        self._btn_atualizar_modelos = ctk.CTkButton(
+            row_modelo, text='↻', width=30, height=30,
+            fg_color=BG_PANEL, hover_color=GRAY_BORD,
+            text_color=TEXT_PRI, font=_font(13),
+            border_width=1, border_color=GRAY_BORD,
+            command=self._atualizar_modelos_ollama)
+        self._btn_atualizar_modelos.pack(side='left', padx=(6, 0))
+
+        row_timeout = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
+        row_timeout.pack(fill='x', pady=(6, 0))
+        ctk.CTkLabel(row_timeout, text='Timeout:', font=_font(12),
+                     text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
+        self._entry_ollama_timeout = ctk.CTkEntry(row_timeout, width=70, height=30,
+                                                   font=_font(12))
+        self._entry_ollama_timeout.insert(
+            0, str(cfg.get('ollama_timeout_s', OLLAMA_TIMEOUT_S)))
+        self._entry_ollama_timeout.pack(side='left')
+        ctk.CTkLabel(row_timeout,
+                     text='segundos por artigo. Num PC sem GPU, um modelo 7B '
+                          'leva ~2 min por artigo — se for curto demais, a IA '
+                          'é ignorada em silêncio.',
+                     font=_font(10), text_color=TEXT_SEC, wraplength=230,
+                     justify='left').pack(side='left', padx=(8, 0))
 
         row_status = ctk.CTkFrame(inner, fg_color='transparent')
         row_status.pack(fill='x', pady=(6, 0))
-        ctk.CTkButton(row_status, text='Verificar conexão', width=140, height=28,
+        ctk.CTkButton(row_status, text='Verificar status', width=140, height=28,
                       fg_color=BG_PANEL, hover_color=GRAY_BORD,
                       text_color=TEXT_PRI, font=_font(12),
                       border_width=1, border_color=GRAY_BORD,
                       command=self._verificar_ollama
                       ).pack(side='left')
+        self._btn_carregar_modelo = ctk.CTkButton(
+            row_status, text='Carregar agora', width=120, height=28,
+            fg_color=BG_PANEL, hover_color=GRAY_BORD,
+            text_color=TEXT_PRI, font=_font(12),
+            border_width=1, border_color=GRAY_BORD,
+            command=self._carregar_modelo_ollama)
+        self._btn_carregar_modelo.pack(side='left', padx=(8, 0))
         self._lbl_status_ollama = ctk.CTkLabel(row_status, text='', font=_font(12),
                                                 text_color=TEXT_SEC)
         self._lbl_status_ollama.pack(side='left', padx=(10, 0))
 
+        # ── Download de modelo ────────────────────────────────────────────
+        row_pull = ctk.CTkFrame(inner, fg_color='transparent')
+        row_pull.pack(fill='x', pady=(8, 0))
+        self._btn_pull = ctk.CTkButton(row_pull, text='Baixar modelo', width=140,
+                                        height=28, fg_color=GREEN,
+                                        hover_color=GREEN_HOV, text_color='white',
+                                        font=_font(12, 'bold'),
+                                        command=self._baixar_modelo_ollama)
+        self._btn_pull.pack(side='left')
+        self._lbl_pull = ctk.CTkLabel(row_pull, text='', font=_font(11),
+                                       text_color=TEXT_SEC)
+        self._lbl_pull.pack(side='left', padx=(10, 0))
+        self._pb_pull = ctk.CTkProgressBar(inner, height=8, progress_color=GREEN)
+        self._pb_pull.set(0)
+        # barra só aparece durante um download (pack no _baixar_modelo_ollama)
+        self._pull_cancelado = False
+        self._pull_ativo = False
+
         self._on_ia_local_toggle()
+        self._atualizar_modelos_ollama()
 
         _sep(inner, pady=(12, 10))
 
@@ -538,23 +589,126 @@ class SettingsDialog(ctk.CTkToplevel):
         estado = 'normal' if self._var_ia_local.get() else 'disabled'
         self._entry_ollama_url.configure(state=estado)
         self._entry_ollama_modelo.configure(state=estado)
+        self._entry_ollama_timeout.configure(state=estado)
+        self._btn_atualizar_modelos.configure(state=estado)
+        self._btn_carregar_modelo.configure(state=estado)
+        self._btn_pull.configure(state=estado)
+
+    def _url_ollama(self):
+        return self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO
+
+    def _modelo_ollama(self):
+        return self._entry_ollama_modelo.get().strip() or OLLAMA_MODELO_PADRAO
+
+    def _timeout_ollama(self):
+        try:
+            return max(5, int(float(self._entry_ollama_timeout.get().strip())))
+        except ValueError:
+            return OLLAMA_TIMEOUT_S
+
+    def _atualizar_modelos_ollama(self):
+        """Preenche o dropdown com os modelos instalados, sem travar a GUI."""
+        url = self._url_ollama()
+
+        def _buscar():
+            try:
+                modelos = ollama_bridge.listar_modelos(url)
+            except ollama_bridge.OllamaErro:
+                return
+            def _aplicar():
+                atual = self._entry_ollama_modelo.get()
+                self._entry_ollama_modelo.configure(values=modelos)
+                if atual.strip():
+                    self._entry_ollama_modelo.set(atual)
+            self.after(0, _aplicar)
+
+        threading.Thread(target=_buscar, daemon=True).start()
 
     def _verificar_ollama(self):
         self._lbl_status_ollama.configure(text='verificando…', text_color=TEXT_SEC)
-        url = self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO
+        url, modelo = self._url_ollama(), self._modelo_ollama()
 
         def _checar():
             try:
-                req = urllib.request.Request(f'{url.rstrip("/")}/api/tags')
-                with urllib.request.urlopen(req, timeout=4):
-                    ok = True
-            except Exception:
-                ok = False
+                st = ollama_bridge.status_modelo(modelo, url)
+            except ollama_bridge.OllamaErro:
+                self.after(0, lambda: self._lbl_status_ollama.configure(
+                    text='✗ Ollama não está respondendo', text_color=C_ERR))
+                return
+            texto, cor = {
+                ollama_bridge.CARREGADO: ('● carregado — pronto pra usar', C_OK),
+                ollama_bridge.INSTALADO: ('● instalado (carrega na 1ª chamada)', C_WARN),
+                ollama_bridge.AUSENTE:   ('● modelo não baixado', C_ERR),
+            }[st]
             self.after(0, lambda: self._lbl_status_ollama.configure(
-                text='✓ Ollama respondendo' if ok else '✗ Não consegui conectar',
-                text_color=C_OK if ok else C_ERR))
+                text=texto, text_color=cor))
 
         threading.Thread(target=_checar, daemon=True).start()
+
+    def _carregar_modelo_ollama(self):
+        """Força o load do modelo agora, pra não pagar esse custo na extração."""
+        url, modelo = self._url_ollama(), self._modelo_ollama()
+        self._lbl_status_ollama.configure(text='carregando modelo… (pode demorar)',
+                                          text_color=TEXT_SEC)
+        self._btn_carregar_modelo.configure(state='disabled')
+
+        def _carregar():
+            try:
+                ollama_bridge.pre_carregar(modelo, url)
+                texto, cor = '● carregado — pronto pra usar', C_OK
+            except ollama_bridge.OllamaErro as exc:
+                texto, cor = f'✗ falha ao carregar: {exc}', C_ERR
+            def _fim():
+                self._lbl_status_ollama.configure(text=texto, text_color=cor)
+                self._btn_carregar_modelo.configure(state='normal')
+            self.after(0, _fim)
+
+        threading.Thread(target=_carregar, daemon=True).start()
+
+    def _baixar_modelo_ollama(self):
+        if self._pull_ativo:            # segundo clique = cancelar
+            self._pull_cancelado = True
+            return
+        url, modelo = self._url_ollama(), self._modelo_ollama()
+        self._pull_ativo, self._pull_cancelado = True, False
+        self._btn_pull.configure(text='Cancelar', fg_color=C_ERR,
+                                 hover_color='#8f1616')
+        self._lbl_pull.configure(text=f'baixando {modelo}…', text_color=TEXT_SEC)
+        self._pb_pull.set(0)
+        self._pb_pull.pack(fill='x', pady=(6, 0))
+
+        def _progresso(status, baixado, total):
+            if total:
+                frac = baixado / total
+                txt = (f'{status} — {baixado / 1e9:.1f} / {total / 1e9:.1f} GB '
+                       f'({frac * 100:.0f}%)')
+            else:
+                frac, txt = 0, status
+            self.after(0, lambda: (self._pb_pull.set(frac),
+                                   self._lbl_pull.configure(text=txt)))
+
+        def _baixar():
+            try:
+                ok = ollama_bridge.puxar_modelo(
+                    modelo, url, on_progresso=_progresso,
+                    deve_cancelar=lambda: self._pull_cancelado)
+                if ok:
+                    texto, cor = f'✓ {modelo} baixado', C_OK
+                else:
+                    texto, cor = 'download cancelado (retoma de onde parou)', TEXT_SEC
+            except ollama_bridge.OllamaErro as exc:
+                texto, cor = f'✗ falha: {exc}', C_ERR
+
+            def _fim():
+                self._pull_ativo = False
+                self._btn_pull.configure(text='Baixar modelo', fg_color=GREEN,
+                                         hover_color=GREEN_HOV)
+                self._pb_pull.pack_forget()
+                self._lbl_pull.configure(text=texto, text_color=cor)
+                self._atualizar_modelos_ollama()
+            self.after(0, _fim)
+
+        threading.Thread(target=_baixar, daemon=True).start()
 
     def _confirmar_instalar_ollama(self):
         if not messagebox.askyesno(
@@ -763,6 +917,7 @@ class SettingsDialog(ctk.CTkToplevel):
             'usar_ia_local': self._var_ia_local.get(),
             'ollama_url': self._entry_ollama_url.get().strip() or OLLAMA_URL_PADRAO,
             'ollama_modelo': self._entry_ollama_modelo.get().strip() or OLLAMA_MODELO_PADRAO,
+            'ollama_timeout_s': self._timeout_ollama(),
         })
         self.destroy()
 
@@ -1133,39 +1288,41 @@ class Etapa3Frame(ctk.CTkFrame):
                      text='Divide em vários arquivos respeitando artigos inteiros',
                      font=_font(11), text_color=TEXT_SEC).pack(side='left', padx=(10, 0))
 
+        # Uma única linha, tudo em pack e alinhado à esquerda: rótulo, campo,
+        # unidade e ajuda. A dica sai da linha e vira legenda embaixo, para o
+        # controle não competir com texto solto.
         self._row_frag_fields = ctk.CTkFrame(frag_inner, fg_color='transparent')
         self._row_frag_fields.pack(fill='x')
 
-        ctk.CTkLabel(self._row_frag_fields, text='Máximo por arquivo:',
+        ctk.CTkLabel(self._row_frag_fields, text='Máximo por arquivo',
                      font=_font(12), text_color=TEXT_SEC, anchor='w'
-                     ).grid(row=0, column=0, sticky='w', padx=(0, 10))
-        kb_row = ctk.CTkFrame(self._row_frag_fields, fg_color='transparent')
-        kb_row.grid(row=0, column=1, sticky='w')
+                     ).pack(side='left', padx=(0, 10))
         self._entry_frag_kb = ctk.CTkEntry(
-            kb_row, width=72, height=30, font=_font(13),
+            self._row_frag_fields, width=76, height=30, font=_font(13),
             justify='center')
         self._entry_frag_kb.insert(0, '500')
         self._entry_frag_kb.configure(state='disabled')
-        self._entry_frag_kb.pack(side='left', padx=(0, 4))
-        ctk.CTkLabel(kb_row, text='KB', font=_font(12),
-                     text_color=TEXT_SEC).pack(side='left')
-        ctk.CTkButton(kb_row, text='?', width=28, height=28,
-                     fg_color=BG_PANEL, hover_color=ACCENT_LT,
-                     text_color=ACCENT, font=_font(13, 'bold'),
+        self._entry_frag_kb.pack(side='left')
+        ctk.CTkLabel(self._row_frag_fields, text='KB', font=_font(12),
+                     text_color=TEXT_SEC).pack(side='left', padx=(6, 0))
+        # Botão redondo: um quadrado de 26px com "?" dentro fica apertado e
+        # briga visualmente com o campo ao lado. corner_radius = metade da
+        # altura deixa o círculo exato.
+        ctk.CTkButton(self._row_frag_fields, text='?', width=24, height=24,
+                     corner_radius=12,
+                     fg_color='transparent', hover_color=ACCENT_LT,
+                     text_color=ACCENT, font=_font(12, 'bold'),
                      border_width=1, border_color=ACCENT_BORD,
                      command=self._mostrar_ajuda_fragmentar
-                     ).pack(side='left', padx=(8, 0))
-        ctk.CTkLabel(kb_row, text='· padrão otimizado para Claude',
-                     font=_font(11), text_color=TEXT_SEC
                      ).pack(side='left', padx=(10, 0))
 
         self._entry_frag_kb.bind('<KeyRelease>',
                                   lambda _: self._atualizar_preview_fragmentos())
 
         self._lbl_preview_frags = ctk.CTkLabel(
-            frag_inner, text='', font=_font(12, 'bold'),
-            text_color=GREEN_TXT, anchor='w')
-        self._lbl_preview_frags.pack(fill='x', pady=(6, 0))
+            frag_inner, text='', font=_font(12), text_color=TEXT_SEC,
+            anchor='w', justify='left')
+        self._lbl_preview_frags.pack(fill='x', pady=(8, 0))
 
         # ── Linha 6: separador + rodapé ────────────────────────────────────────
         ctk.CTkFrame(main, fg_color=DIVIDER, height=1, corner_radius=0
@@ -1998,37 +2155,53 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _mostrar_ajuda_fragmentar(self):
         MODELOS = [
-            ('Claude Sonnet / Opus',   500,  '200K tokens de contexto'),
-            ('GPT-4o / GPT-4.1',       300,  '128K tokens de contexto'),
+            ('Claude Sonnet / Opus',   2000, '1M tokens de contexto'),
+            ('Claude Haiku',           500,  '200K tokens de contexto'),
             ('Gemini 1.5 / 2.0 Flash', 2500, '1M tokens de contexto'),
-            ('DeepSeek V3 / R1',       300,  '128K tokens de contexto'),
+            ('GPT-4o / GPT-4.1',       300,  '128K tokens de contexto'),
         ]
 
         win = ctk.CTkToplevel(self)
         win.title('Tamanho recomendado por modelo')
         win.resizable(False, False)
         win.withdraw()
+        win.configure(fg_color=BG_WINDOW)
 
-        frame = ctk.CTkFrame(win, fg_color=BG_WINDOW)
-        frame.pack(fill='both', expand=True, padx=0, pady=0)
+        # Faixa de cabeçalho, igual à da janela de resumo pós-extração.
+        hdr = ctk.CTkFrame(win, fg_color=GREEN_HDR, corner_radius=0, height=62)
+        hdr.pack(fill='x')
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text='Tamanho recomendado por modelo',
+                     font=_font(14, 'bold'), text_color=GREEN_TXT, anchor='w'
+                     ).pack(fill='x', padx=20, pady=(12, 0))
+        ctk.CTkLabel(hdr,
+                     text='Cada valor deixa margem para o prompt e a resposta da IA.',
+                     font=_font(11), text_color=TEXT_SEC, anchor='w'
+                     ).pack(fill='x', padx=20)
 
-        ctk.CTkLabel(frame, text='Tamanhos recomendados por modelo de IA',
-                     font=_font(14, 'bold'), text_color=TEXT_PRI
-                     ).pack(padx=20, pady=(16, 2), anchor='w')
-        ctk.CTkLabel(frame,
-                     text='Valores deixam margem para o prompt e a resposta da IA.',
-                     font=_font(11), text_color=TEXT_SEC
-                     ).pack(padx=20, pady=(0, 8), anchor='w')
+        corpo = ctk.CTkFrame(win, fg_color='transparent')
+        corpo.pack(fill='both', expand=True, padx=16, pady=(12, 0))
 
         for modelo, kb, ctx in MODELOS:
-            row = ctk.CTkFrame(frame, fg_color='transparent')
-            row.pack(fill='x', padx=20, pady=3)
-            ctk.CTkLabel(row, text=modelo, font=_font(13),
-                         text_color=TEXT_PRI, width=200, anchor='w').pack(side='left')
-            ctk.CTkLabel(row, text=f'~{kb} KB', font=_font(13, 'bold'),
-                         text_color=ACCENT, width=70).pack(side='left')
-            ctk.CTkLabel(row, text=ctx, font=_font(11),
-                         text_color=TEXT_SEC).pack(side='left', padx=(4, 0))
+            # Um card por modelo: nome e contexto empilhados à esquerda, valor
+            # e ação à direita. Antes eram quatro rótulos de largura fixa numa
+            # linha só, que desalinhavam assim que o número mudava de dígitos.
+            card = ctk.CTkFrame(corpo, fg_color=BG_CARD, border_color=DIVIDER,
+                                border_width=1, corner_radius=RAIO_CARD)
+            card.pack(fill='x', pady=3)
+            row = ctk.CTkFrame(card, fg_color='transparent')
+            row.pack(fill='x', padx=12, pady=8)
+
+            texto = ctk.CTkFrame(row, fg_color='transparent')
+            texto.pack(side='left', fill='x', expand=True)
+            ctk.CTkLabel(texto, text=modelo, font=_font(13, 'bold'),
+                         text_color=TEXT_PRI, anchor='w').pack(fill='x')
+            ctk.CTkLabel(texto, text=ctx, font=_font(11),
+                         text_color=TEXT_SEC, anchor='w').pack(fill='x')
+
+            ctk.CTkLabel(row, text=f'{kb} KB', font=_font(13, 'bold'),
+                         text_color=ACCENT, width=78, anchor='e'
+                         ).pack(side='left', padx=(8, 12))
 
             def _usar(k=kb):
                 self._entry_frag_kb.configure(state='normal')
@@ -2041,18 +2214,20 @@ class Etapa3Frame(ctk.CTkFrame):
                     self._atualizar_preview_fragmentos()
                 win.destroy()
 
-            ctk.CTkButton(row, text='Usar', width=52, height=26,
+            ctk.CTkButton(row, text='Usar', width=58, height=28,
                          fg_color=GREEN, hover_color=GREEN_HOV,
                          text_color='white', font=_font(12, 'bold'),
-                         command=_usar).pack(side='right')
+                         command=_usar).pack(side='left')
 
-        ctk.CTkButton(frame, text='Fechar', width=90, height=30,
+        ctk.CTkButton(win, text='Fechar', width=90, height=30,
                      fg_color=BG_PANEL, hover_color=GRAY_BORD,
                      text_color=TEXT_PRI, font=_font(13),
-                     command=win.destroy).pack(pady=(12, 16))
+                     command=win.destroy).pack(pady=(14, 16))
 
+        # Altura calculada: a fixa de 480x270 cortava o conteúdo assim que a
+        # lista de modelos crescia.
         win.update_idletasks()
-        win.geometry('480x270')
+        win.geometry(f'520x{win.winfo_reqheight()}')
         win.deiconify()
         win.lift()
         win.focus_force()

@@ -124,9 +124,12 @@ def _limpar_marcas_pirata(md):
     return '\n'.join(l for l in linhas if not _SITE_PIRATA_RE.search(l))
 
 
-def converter_pdf(caminho):
-    """Converte PDF para Markdown. Retorna (markdown, nome_motor)."""
-    tipo = detectar_tipo_pdf(caminho)
+def converter_pdf(caminho, tipo=None):
+    """Converte PDF para Markdown. Retorna (markdown, nome_motor).
+
+    `tipo` evita reabrir o PDF só para redetectar o que o chamador já sabe.
+    """
+    tipo = tipo or detectar_tipo_pdf(caminho)
     if tipo == 'digital' and PYMUPDF4LLM_OK:
         md = _pymupdf4llm.to_markdown(
             caminho, ignore_images=True, ignore_graphics=True)
@@ -152,8 +155,16 @@ _SUPLEMENTAR_INTEGRAL_RE = re.compile(
 )
 
 
+# Um suplementar de verdade se anuncia na abertura ("This is a supporting
+# information file…"). Um artigo completo apenas *cita* o próprio suplementar,
+# e essa citação vem depois do título, dos autores e do resumo. Só contar
+# ocorrências confundia os dois e descartava artigos inteiros: no corpus de
+# teste o anúncio real caiu no caractere 29 e as citações em 1619, 1642 e 2770.
+_SUPLEMENTAR_INICIO_MAX = 500
+
+
 def _e_suplementar_integral(caminho):
-    """Retorna True se as primeiras páginas indicam ser material suplementar integral."""
+    """Retorna True se o PDF é material suplementar — não um artigo que o cita."""
     try:
         import fitz
         doc = fitz.open(caminho)
@@ -161,5 +172,7 @@ def _e_suplementar_integral(caminho):
         doc.close()
     except Exception:
         return False
-    matches = _SUPLEMENTAR_INTEGRAL_RE.findall(texto[:3000])
-    return len(matches) >= 2
+    matches = list(_SUPLEMENTAR_INTEGRAL_RE.finditer(texto[:3000]))
+    if len(matches) < 2:
+        return False
+    return matches[0].start() < _SUPLEMENTAR_INICIO_MAX

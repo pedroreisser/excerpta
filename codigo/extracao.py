@@ -14,7 +14,8 @@ from motor_pdf import (
     _e_suplementar_integral, converter_pdf, detectar_tipo_pdf,
 )
 from secoes import (
-    _e_review, _extrair_secoes, _fallback_secoes_ia, _md_remover_secoes,
+    _extrair_secoes, _fallback_secoes_ia, _md_remover_secoes,
+    _review_com_motivo, diagnostico_estrutura,
 )
 
 
@@ -139,7 +140,10 @@ def executar(artigos, path_saida, secoes_cfg, fallback_cfg,
                 continue
 
             # Opt-out de OCR: pular PDFs escaneados se usuário desativou
-            if not usar_ocr and detectar_tipo_pdf(art['caminho']) == 'escaneado':
+            # tipo já calculado pela GUI; só redetecta se veio faltando
+            tipo_art = (tipos_pdf.get(art['arquivo'])
+                        or detectar_tipo_pdf(art['caminho']))
+            if not usar_ocr and tipo_art == 'escaneado':
                 stats['ignorados'] += 1
                 if debug_log_path:
                     logger.info('Ignorado (OCR desativado) | arquivo=%s', art['arquivo'])
@@ -153,7 +157,16 @@ def executar(artigos, path_saida, secoes_cfg, fallback_cfg,
                 processados += 1
                 continue
 
-            md, _ = converter_pdf(art['caminho'])
+            md, _ = converter_pdf(art['caminho'], tipo=tipo_art)
+
+            if debug_log_path:
+                d = diagnostico_estrutura(md)
+                logger.info(
+                    'Estrutura | arquivo=%s | cabecalhos=%d | hierarquia_plana=%s '
+                    '| niveis=%s | classificados=%s | sem_classificar=%d %s',
+                    art['arquivo'], d['cabecalhos'], d['plana'], d['niveis'],
+                    d['classificados'] or '{}', d['total_nao_classificados'],
+                    d['nao_classificados'])
 
             if 'tudo' in secoes_cfg:
                 partes.append(md)
@@ -162,7 +175,11 @@ def executar(artigos, path_saida, secoes_cfg, fallback_cfg,
                 incluir_refs = 'referencias' in secoes_cfg
 
                 # Mudança 2: detecção de review
-                if _e_review(art['caminho'], md):
+                e_review, motivo_review = _review_com_motivo(art['caminho'], md)
+                if debug_log_path:
+                    logger.info('Classificacao | arquivo=%s | review=%s | motivo=%s',
+                                art['arquivo'], e_review, motivo_review)
+                if e_review:
                     excluir_rev = set()
                     if not incluir_refs:
                         excluir_rev.add('referencias')
@@ -176,12 +193,25 @@ def executar(artigos, path_saida, secoes_cfg, fallback_cfg,
                     # Mudança 3: extração com suporte a compostos
                     encontradas, nao_encontradas, partes_sec = _extrair_secoes(md, secoes_cfg)
                     partes.extend(partes_sec)
+                    if debug_log_path:
+                        logger.info(
+                            'Secoes (regex) | arquivo=%s | pedidas=%s | achadas=%s | faltando=%s',
+                            art['arquivo'], secoes_cfg, encontradas or '-',
+                            nao_encontradas or '-')
 
                     # Fallback via IA local (Ollama): só roda se o regex/fuzzy
                     # deixou seções sem encontrar e a opção está ligada nas
                     # configurações. Falha silenciosa -> segue pro fallback antigo.
                     if nao_encontradas and usar_ia_local:
-                        partes_ia, encontradas_ia = _fallback_secoes_ia(md, nao_encontradas)
+                        t_ia = time.time()
+                        partes_ia, encontradas_ia = _fallback_secoes_ia(
+                            md, nao_encontradas, deve_cancelar=deve_cancelar)
+                        if debug_log_path:
+                            logger.info(
+                                'Secoes (IA local) | arquivo=%s | tentou=%s | '
+                                'recuperou=%s | %.1fs',
+                                art['arquivo'], nao_encontradas,
+                                encontradas_ia or 'nada', time.time() - t_ia)
                         if encontradas_ia:
                             partes.extend(partes_ia)
                             encontradas = encontradas + encontradas_ia
@@ -234,7 +264,6 @@ def executar(artigos, path_saida, secoes_cfg, fallback_cfg,
             + '\n--- FIM ARTIGO ---'
         )
         t_art    = time.time() - t_art_inicio
-        tipo_art = tipos_pdf.get(art['arquivo'], 'digital')
         taxa_art = t_art / kbs[i - 1]
         if tipo_art == 'escaneado' and usar_ocr:
             taxa_ocr_real.append(taxa_art)
