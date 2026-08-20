@@ -265,9 +265,13 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title('Configurações')
-        self.resizable(False, False)
         self.withdraw()
         self.protocol('WM_DELETE_WINDOW', self._fechar)
+
+        # Labels de texto corrido (wraplength) registrados aqui se reajustam
+        # ao redimensionar a janela, em vez de ficar cortados ou com uma
+        # faixa de espaço em branco fixa quando a janela cresce.
+        self._wrap_labels = []
 
         cfg = _ler_settings()
 
@@ -279,7 +283,7 @@ class SettingsDialog(ctk.CTkToplevel):
         _sep(frame, pady=(0, 10))
 
         tabs = ctk.CTkTabview(
-            frame, width=420, height=380, fg_color=BG_CARD,
+            frame, fg_color=BG_CARD,
             segmented_button_fg_color=BG_PANEL,
             segmented_button_selected_color=GREEN,
             segmented_button_selected_hover_color=GREEN_HOV,
@@ -299,11 +303,26 @@ class SettingsDialog(ctk.CTkToplevel):
                      command=self._fechar).pack(pady=(0, 16))
 
         self.update_idletasks()
-        self.geometry('480x560')
+        self.minsize(520, 560)
+        self.geometry('620x680')
+        self.bind('<Configure>', self._on_resize)
         self.deiconify()
         self.lift()
         self.focus_force()
         self.after(50, self.grab_set)
+
+    def _texto_corrido(self, parent, text, margin=76, **kw):
+        """CTkLabel de texto corrido que reajusta o wraplength com a janela."""
+        largura = max(200, self.winfo_width() - margin)
+        lbl = ctk.CTkLabel(parent, text=text, font=_font(11), text_color=TEXT_SEC,
+                           wraplength=largura, justify='left', anchor='w', **kw)
+        self._wrap_labels.append((lbl, margin))
+        return lbl
+
+    def _on_resize(self, _evt=None):
+        largura_janela = self.winfo_width()
+        for lbl, margin in self._wrap_labels:
+            lbl.configure(wraplength=max(200, largura_janela - margin))
 
     # ── aba Geral ───────────────────────────────────────────────────────────
 
@@ -360,11 +379,10 @@ class SettingsDialog(ctk.CTkToplevel):
                       command=self._ajuda_ocr
                       ).pack(side='left', padx=(8, 0))
 
-        ctk.CTkLabel(inner,
-                     text='Requer docling instalado. PDFs escaneados são imagens '
-                          'sem texto digital.',
-                     font=_font(11), text_color=TEXT_SEC, wraplength=340
-                     ).pack(pady=(0, 12), anchor='w')
+        self._texto_corrido(
+            inner,
+            'Requer docling instalado. PDFs escaneados são imagens sem texto digital.'
+            ).pack(pady=(0, 12), anchor='w', fill='x')
 
         if not DOCLING_OK:
             row_docling = ctk.CTkFrame(inner, fg_color='transparent')
@@ -418,11 +436,11 @@ class SettingsDialog(ctk.CTkToplevel):
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
                         ).pack(anchor='w', pady=(0, 2))
-        ctk.CTkLabel(inner,
-                     text='Arquivo técnico (excerpta_debug.log) com detalhes de cada '
-                          'artigo — envie-o se der problema.',
-                     font=_font(11), text_color=TEXT_SEC, wraplength=340
-                     ).pack(pady=(0, 8), anchor='w')
+        self._texto_corrido(
+            inner,
+            'Arquivo técnico (excerpta_debug.log) com detalhes de cada artigo '
+            '— envie-o se der problema.'
+            ).pack(pady=(0, 8), anchor='w', fill='x')
 
     # ── aba IA local ────────────────────────────────────────────────────────
 
@@ -430,30 +448,55 @@ class SettingsDialog(ctk.CTkToplevel):
         inner = ctk.CTkScrollableFrame(tab, fg_color='transparent')
         inner.pack(fill='both', expand=True)
 
-        ctk.CTkLabel(inner, text='O que é isso?',
-                     font=_font(12, 'bold'), text_color=TEXT_SEC
-                     ).pack(pady=(6, 4), anchor='w')
-        ctk.CTkLabel(inner,
-                     text='Ollama roda modelos de IA no seu computador, sem mandar '
-                          'nada pra internet. O Excerpta usa isso só como reforço: '
-                          'quando o regex/fuzzy não acha alguma seção do artigo, '
-                          'pergunta pro modelo local onde ela começa, antes de cair '
-                          'no fallback padrão.',
-                     font=_font(11), text_color=TEXT_SEC, wraplength=340,
-                     justify='left'
-                     ).pack(pady=(0, 12), anchor='w')
-
-        if shutil.which('ollama'):
-            ctk.CTkLabel(inner, text='✓ Ollama instalado',
-                         font=_font(12), text_color=C_OK
-                         ).pack(pady=(0, 12), anchor='w')
+        # ── 1. Status do Ollama (instalação vem primeiro: sem ela, o resto
+        # da aba não serve pra nada) ────────────────────────────────────────
+        ollama_instalado = bool(shutil.which('ollama'))
+        row_status_ollama = ctk.CTkFrame(inner, fg_color='transparent')
+        row_status_ollama.pack(fill='x', pady=(0, 4))
+        if ollama_instalado:
+            ctk.CTkLabel(row_status_ollama, text='✓ Ollama instalado',
+                         font=_font(12, 'bold'), text_color=C_OK
+                         ).pack(side='left')
         else:
-            ctk.CTkLabel(inner, text='✗ Ollama não instalado',
-                         font=_font(12), text_color=C_ERR
-                         ).pack(pady=(0, 12), anchor='w')
+            ctk.CTkLabel(row_status_ollama, text='✗ Ollama não instalado',
+                         font=_font(12, 'bold'), text_color=C_ERR
+                         ).pack(side='left')
+        self._lbl_status_ollama = ctk.CTkLabel(row_status_ollama, text='',
+                                                font=_font(12), text_color=TEXT_SEC)
+        self._lbl_status_ollama.pack(side='left', padx=(10, 0))
 
-        _sep(inner, pady=(0, 10))
+        if not ollama_instalado:
+            if sys.platform.startswith('linux'):
+                self._texto_corrido(
+                    inner,
+                    'Roda o instalador oficial (ollama.com/install.sh) com log '
+                    'ao vivo, direto por aqui. Pode pedir senha de '
+                    'administrador no processo.'
+                    ).pack(pady=(4, 8), anchor='w', fill='x')
+                ctk.CTkButton(inner, text='Instalar Ollama', width=150, height=30,
+                             fg_color=GREEN, hover_color=GREEN_HOV,
+                             text_color='white', font=_font(12, 'bold'),
+                             command=self._confirmar_instalar_ollama
+                             ).pack(anchor='w', pady=(0, 4))
+            else:
+                self._texto_corrido(
+                    inner, 'Baixe o instalador oficial pro seu sistema em ollama.com.'
+                    ).pack(pady=(4, 8), anchor='w', fill='x')
+                ctk.CTkButton(inner, text='Abrir página de download', width=180, height=30,
+                             fg_color=GREEN, hover_color=GREEN_HOV,
+                             text_color='white', font=_font(12, 'bold'),
+                             command=lambda: webbrowser.open(OLLAMA_DOWNLOAD_URL)
+                             ).pack(anchor='w', pady=(0, 4))
+            self._texto_corrido(
+                inner,
+                'O resto desta aba só faz sentido depois de instalado — '
+                'os campos abaixo já ficam configurados, é só ativar quando '
+                'o Ollama estiver pronto.'
+                ).pack(pady=(6, 4), anchor='w', fill='x')
 
+        _sep(inner, pady=(10, 10))
+
+        # ── 2. Ativar ────────────────────────────────────────────────────
         self._var_ia_local = ctk.BooleanVar(value=cfg.get('usar_ia_local', False))
         ctk.CTkCheckBox(inner,
                         text='Usar IA local (Ollama) quando seções não são encontradas',
@@ -462,15 +505,20 @@ class SettingsDialog(ctk.CTkToplevel):
                         font=_font(13), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
-                        ).pack(anchor='w', pady=(6, 4))
-        ctk.CTkLabel(inner,
-                     text='Desligado por padrão. Se o Ollama não responder, o '
-                          'Excerpta usa o fallback normal sem travar.',
-                     font=_font(11), text_color=TEXT_SEC, wraplength=340
+                        ).pack(anchor='w', pady=(0, 4))
+        self._texto_corrido(
+            inner,
+            'Desligado por padrão. Se o Ollama não responder, o Excerpta usa '
+            'o fallback normal sem travar.'
+            ).pack(pady=(0, 12), anchor='w', fill='x')
+
+        # ── 3. Configuração do modelo ───────────────────────────────────────
+        ctk.CTkLabel(inner, text='Configuração',
+                     font=_font(12, 'bold'), text_color=TEXT_SEC
                      ).pack(pady=(0, 8), anchor='w')
 
         self._row_ollama_fields = ctk.CTkFrame(inner, fg_color='transparent')
-        self._row_ollama_fields.pack(fill='x', pady=(0, 6))
+        self._row_ollama_fields.pack(fill='x', pady=(0, 12))
 
         row_url = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
         row_url.pack(fill='x', pady=(0, 6))
@@ -482,7 +530,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._entry_ollama_url.pack(side='left')
 
         row_modelo = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
-        row_modelo.pack(fill='x')
+        row_modelo.pack(fill='x', pady=(0, 6))
         ctk.CTkLabel(row_modelo, text='Modelo:', font=_font(12),
                      text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
         # Combobox editável: lista os modelos já instalados (via /api/tags),
@@ -500,7 +548,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._btn_atualizar_modelos.pack(side='left', padx=(6, 0))
 
         row_timeout = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
-        row_timeout.pack(fill='x', pady=(6, 0))
+        row_timeout.pack(fill='x')
         ctk.CTkLabel(row_timeout, text='Timeout:', font=_font(12),
                      text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
         self._entry_ollama_timeout = ctk.CTkEntry(row_timeout, width=70, height=30,
@@ -508,45 +556,58 @@ class SettingsDialog(ctk.CTkToplevel):
         self._entry_ollama_timeout.insert(
             0, str(cfg.get('ollama_timeout_s', OLLAMA_TIMEOUT_S)))
         self._entry_ollama_timeout.pack(side='left')
-        ctk.CTkLabel(row_timeout,
-                     text='segundos por artigo. Num PC sem GPU, um modelo 7B '
-                          'leva ~2 min por artigo — se for curto demais, a IA '
-                          'é ignorada em silêncio.',
-                     font=_font(10), text_color=TEXT_SEC, wraplength=230,
-                     justify='left').pack(side='left', padx=(8, 0))
+        ctk.CTkLabel(row_timeout, text='segundos por artigo',
+                     font=_font(11), text_color=TEXT_SEC
+                     ).pack(side='left', padx=(8, 0))
 
-        row_status = ctk.CTkFrame(inner, fg_color='transparent')
-        row_status.pack(fill='x', pady=(6, 0))
-        ctk.CTkButton(row_status, text='Verificar status', width=140, height=28,
-                      fg_color=BG_PANEL, hover_color=GRAY_BORD,
-                      text_color=TEXT_PRI, font=_font(12),
-                      border_width=1, border_color=GRAY_BORD,
-                      command=self._verificar_ollama
-                      ).pack(side='left')
+        self._texto_corrido(
+            inner,
+            'Num PC sem GPU, um modelo 7B leva ~2 min por artigo — se o '
+            'timeout for curto demais, a IA é ignorada em silêncio.'
+            ).pack(pady=(2, 12), anchor='w', fill='x')
+
+        # ── 4. Modelo: status e ações ────────────────────────────────────
+        card_modelo = ctk.CTkFrame(inner, fg_color=BG_PANEL, corner_radius=RAIO_CARD)
+        card_modelo.pack(fill='x', pady=(0, 12))
+        card_modelo_in = ctk.CTkFrame(card_modelo, fg_color='transparent')
+        card_modelo_in.pack(fill='x', padx=14, pady=12)
+
+        ctk.CTkLabel(card_modelo_in, text='Modelo local',
+                     font=_font(12, 'bold'), text_color=TEXT_PRI
+                     ).pack(anchor='w', pady=(0, 8))
+
+        row_carregar = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
+        row_carregar.pack(fill='x')
         self._btn_carregar_modelo = ctk.CTkButton(
-            row_status, text='Carregar agora', width=120, height=28,
-            fg_color=BG_PANEL, hover_color=GRAY_BORD,
+            row_carregar, text='Pré-carregar modelo', width=160, height=28,
+            fg_color=BG_CARD, hover_color=GRAY_BORD,
             text_color=TEXT_PRI, font=_font(12),
             border_width=1, border_color=GRAY_BORD,
             command=self._carregar_modelo_ollama)
-        self._btn_carregar_modelo.pack(side='left', padx=(8, 0))
-        self._lbl_status_ollama = ctk.CTkLabel(row_status, text='', font=_font(12),
-                                                text_color=TEXT_SEC)
-        self._lbl_status_ollama.pack(side='left', padx=(10, 0))
+        self._btn_carregar_modelo.pack(side='left')
+        ctk.CTkLabel(row_carregar, text='deixa o modelo pronto antes da extração',
+                     font=_font(11), text_color=TEXT_SEC
+                     ).pack(side='left', padx=(10, 0))
 
-        # ── Download de modelo ────────────────────────────────────────────
-        row_pull = ctk.CTkFrame(inner, fg_color='transparent')
-        row_pull.pack(fill='x', pady=(8, 0))
+        _sep(card_modelo_in, pady=(10, 10))
+
+        row_pull = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
+        row_pull.pack(fill='x')
         self._btn_pull = ctk.CTkButton(row_pull, text='Baixar modelo', width=140,
                                         height=28, fg_color=GREEN,
                                         hover_color=GREEN_HOV, text_color='white',
                                         font=_font(12, 'bold'),
                                         command=self._baixar_modelo_ollama)
         self._btn_pull.pack(side='left')
-        self._lbl_pull = ctk.CTkLabel(row_pull, text='', font=_font(11),
+        ctk.CTkLabel(row_pull, text='baixa o modelo acima do catálogo do Ollama',
+                     font=_font(11), text_color=TEXT_SEC
+                     ).pack(side='left', padx=(10, 0))
+        row_pull_status = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
+        row_pull_status.pack(fill='x')
+        self._lbl_pull = ctk.CTkLabel(row_pull_status, text='', font=_font(11),
                                        text_color=TEXT_SEC)
-        self._lbl_pull.pack(side='left', padx=(10, 0))
-        self._pb_pull = ctk.CTkProgressBar(inner, height=8, progress_color=GREEN)
+        self._lbl_pull.pack(side='left', pady=(4, 0))
+        self._pb_pull = ctk.CTkProgressBar(card_modelo_in, height=8, progress_color=GREEN)
         self._pb_pull.set(0)
         # barra só aparece durante um download (pack no _baixar_modelo_ollama)
         self._pull_cancelado = False
@@ -554,36 +615,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self._on_ia_local_toggle()
         self._atualizar_modelos_ollama()
-
-        _sep(inner, pady=(12, 10))
-
-        ctk.CTkLabel(inner, text='Não tem o Ollama instalado?',
-                     font=_font(12, 'bold'), text_color=TEXT_SEC
-                     ).pack(pady=(0, 6), anchor='w')
-
-        if sys.platform.startswith('linux'):
-            ctk.CTkLabel(inner,
-                         text='Roda o instalador oficial (ollama.com/install.sh) '
-                              'com log ao vivo, direto por aqui. Pode pedir senha '
-                              'de administrador no processo.',
-                         font=_font(11), text_color=TEXT_SEC, wraplength=340
-                         ).pack(pady=(0, 8), anchor='w')
-            ctk.CTkButton(inner, text='Instalar Ollama', width=150, height=30,
-                         fg_color=GREEN, hover_color=GREEN_HOV,
-                         text_color='white', font=_font(12, 'bold'),
-                         command=self._confirmar_instalar_ollama
-                         ).pack(anchor='w', pady=(0, 12))
-        else:
-            ctk.CTkLabel(inner,
-                         text='Baixe o instalador oficial pro seu sistema em '
-                              'ollama.com.',
-                         font=_font(11), text_color=TEXT_SEC, wraplength=340
-                         ).pack(pady=(0, 8), anchor='w')
-            ctk.CTkButton(inner, text='Abrir página de download', width=180, height=30,
-                         fg_color=GREEN, hover_color=GREEN_HOV,
-                         text_color='white', font=_font(12, 'bold'),
-                         command=lambda: webbrowser.open(OLLAMA_DOWNLOAD_URL)
-                         ).pack(anchor='w', pady=(0, 12))
+        if ollama_instalado:
+            self._verificar_ollama()
 
     def _on_ia_local_toggle(self):
         estado = 'normal' if self._var_ia_local.get() else 'disabled'
@@ -636,8 +669,8 @@ class SettingsDialog(ctk.CTkToplevel):
                     text='✗ Ollama não está respondendo', text_color=C_ERR))
                 return
             texto, cor = {
-                ollama_bridge.CARREGADO: ('● carregado — pronto pra usar', C_OK),
-                ollama_bridge.INSTALADO: ('● instalado (carrega na 1ª chamada)', C_WARN),
+                ollama_bridge.CARREGADO: ('● pronto pra usar', C_OK),
+                ollama_bridge.INSTALADO: ('● pronto pra usar', C_OK),
                 ollama_bridge.AUSENTE:   ('● modelo não baixado', C_ERR),
             }[st]
             self.after(0, lambda: self._lbl_status_ollama.configure(
@@ -1117,6 +1150,11 @@ class Etapa3Frame(ctk.CTkFrame):
         ctk.CTkButton(r1, text='Selecionar', width=110,
                      fg_color=GREEN, hover_color=GREEN_HOV, height=34,
                      font=_font(14), command=self._sel_pasta3).pack(side='left')
+        ctk.CTkButton(r1, text='Nova pasta', width=100,
+                     fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                     text_color=TEXT_PRI, height=34, font=_font(13),
+                     border_width=1, border_color=GRAY_BORD,
+                     command=self._nova_pasta3).pack(side='left', padx=(6, 0))
         _btn_recentes(r1, self._entry_pasta3, 'pastas', self._aplicar_pasta3)
         _bind_dnd_entry(self._entry_pasta3, self._on_dnd_pasta3)
 
@@ -1463,9 +1501,43 @@ class Etapa3Frame(ctk.CTkFrame):
         if pasta:
             self._aplicar_pasta3(pasta)
 
-    def _aplicar_pasta3(self, pasta):
-        if not pasta or not os.path.isdir(pasta):
+    def _nova_pasta3(self):
+        """Cria uma pasta nova sem precisar sair do Excerpta e voltar depois
+        pra selecioná-la — o diálogo padrão do sistema nem sempre tem essa
+        opção (falta no seletor do Linux, por exemplo).
+        """
+        pai = filedialog.askdirectory(
+            title='Onde criar a nova pasta?',
+            initialdir=self._pasta or os.path.expanduser('~'))
+        if not pai:
             return
+        nome = ctk.CTkInputDialog(
+            title='Nova pasta', text='Nome da nova pasta:').get_input()
+        if not nome or not nome.strip():
+            return
+        nova = os.path.join(pai, nome.strip())
+        try:
+            os.makedirs(nova, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror('Erro', f'Não foi possível criar a pasta:\n{exc}')
+            return
+        self._aplicar_pasta3(nova)
+
+    def _aplicar_pasta3(self, pasta):
+        if not pasta:
+            return
+        if not os.path.isdir(pasta):
+            if os.path.exists(pasta):
+                return
+            if not messagebox.askyesno(
+                    'Pasta não existe',
+                    f'A pasta abaixo ainda não existe:\n\n{pasta}\n\nCriar agora?'):
+                return
+            try:
+                os.makedirs(pasta, exist_ok=True)
+            except OSError as exc:
+                messagebox.showerror('Erro', f'Não foi possível criar a pasta:\n{exc}')
+                return
         self._pasta = pasta
         self._entry_pasta3.delete(0, 'end')
         self._entry_pasta3.insert(0, pasta)
