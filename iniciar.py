@@ -172,6 +172,116 @@ def _instalar_pacotes(pacotes, callback_log, callback_fim):
 
 # ── Interface gráfica ─────────────────────────────────────────────────────────
 
+# ── Atalho no menu do sistema ────────────────────────────────────────────────
+
+_PASTA_PROJETO = os.path.dirname(os.path.abspath(__file__))
+
+
+def _criar_atalho_linux():
+    """Cria (uma vez) o .desktop em ~/.local/share/applications, para o
+    Excerpta aparecer no menu/pesquisa do sistema, como qualquer app instalado.
+    """
+    destino = os.path.expanduser("~/.local/share/applications/excerpta.desktop")
+    if os.path.exists(destino):
+        return
+
+    conteudo = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Excerpta\n"
+        "Comment=Extração seletiva de seções de artigos científicos em PDF\n"
+        f"Exec=\"{sys.executable}\" \"{os.path.join(_PASTA_PROJETO, 'iniciar.py')}\"\n"
+        f"Path={_PASTA_PROJETO}\n"
+        "Terminal=false\n"
+        "Categories=Office;\n"
+    )
+
+    os.makedirs(os.path.dirname(destino), exist_ok=True)
+    with open(destino, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+    os.chmod(destino, 0o755)
+
+    # Best-effort: atualiza o índice para o atalho aparecer imediatamente na
+    # busca, sem precisar relogar. Não é crítico se faltar ou falhar.
+    if shutil.which("update-desktop-database"):
+        subprocess.run(
+            ["update-desktop-database", os.path.dirname(destino)],
+            capture_output=True
+        )
+
+
+def _gerar_lnk(destino):
+    """Gera o atalho .lnk em `destino` via um script VBS descartável
+    (WScript.Shell), a forma padrão de criar .lnk no Windows sem depender de
+    bibliotecas extras como pywin32. Retorna True se o arquivo foi criado.
+    """
+    pythonw = _python_gui()
+    iniciar = os.path.join(_PASTA_PROJETO, "iniciar.py")
+    vbs = (
+        'Set oWS = WScript.CreateObject("WScript.Shell")\n'
+        f'Set oLink = oWS.CreateShortcut("{destino}")\n'
+        f'oLink.TargetPath = "{pythonw}"\n'
+        f'oLink.Arguments = "{iniciar}"\n'
+        f'oLink.WorkingDirectory = "{_PASTA_PROJETO}"\n'
+        f'oLink.IconLocation = "{pythonw}"\n'
+        'oLink.Save\n'
+    )
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vbs", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(vbs)
+        caminho_vbs = tmp.name
+
+    try:
+        os.makedirs(os.path.dirname(destino), exist_ok=True)
+        subprocess.run(["cscript", "//nologo", caminho_vbs], capture_output=True)
+    finally:
+        os.remove(caminho_vbs)
+
+    return os.path.exists(destino)
+
+
+def _criar_atalho_windows():
+    """Cria (uma vez) um atalho .lnk para o Excerpta.
+
+    Tenta primeiro no Menu Iniciar do usuário (%APPDATA%), pasta pessoal que
+    não exige admin e faz o atalho aparecer na Pesquisa do Windows. Se algo
+    impedir isso (ex: cscript indisponível), cai para um atalho simples
+    dentro da própria pasta do programa.
+    """
+    destino_local = os.path.join(_PASTA_PROJETO, "Excerpta.lnk")
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        destino_menu = os.path.join(
+            appdata, "Microsoft", "Windows", "Start Menu", "Programs",
+            "Excerpta.lnk"
+        )
+        if os.path.exists(destino_menu):
+            return
+        if _gerar_lnk(destino_menu):
+            return
+
+    if os.path.exists(destino_local):
+        return
+    _gerar_lnk(destino_local)
+
+
+def _criar_atalho():
+    """Cria o atalho do sistema operacional atual. Nunca interrompe a
+    abertura do app: qualquer falha aqui é silenciosa.
+    """
+    try:
+        if IS_LINUX:
+            _criar_atalho_linux()
+        elif IS_WIN:
+            _criar_atalho_windows()
+    except Exception:
+        pass
+
+
 def _python_gui():
     """Interpretador que abre a janela do Excerpta.
 
@@ -387,6 +497,8 @@ if __name__ == "__main__":
     # instalando via apt/dnf/yum/zypper/pacman/apk conforme detectado.
     if IS_LINUX and not _garantir_tk_e_pip():
         sys.exit(1)
+
+    _criar_atalho()
 
     if APENAS_INSTALAR:
         sys.exit(main_instalar())

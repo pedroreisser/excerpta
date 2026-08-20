@@ -15,5 +15,8 @@ excerpta_debug.log
 excerpta.zip
 *.zip
 
+# Atalho criado automaticamente pelo iniciar.py (Windows, fallback local)
+Excerpta.lnk
+
 # Claude Code
 .claude/

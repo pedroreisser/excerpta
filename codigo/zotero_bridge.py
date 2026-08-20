@@ -396,6 +396,18 @@ def _referencias_do_texto(texto):
             atual = []
     if atual:
         blocos.append(' '.join(atual))
+
+    # Ao arrastar vários itens de uma vez, o Zotero separa as citações por
+    # uma linha simples, sem linha em branco entre elas — o laço acima então
+    # não encontra nenhum separador e funde tudo num bloco só, reconhecendo
+    # apenas o primeiro item. Sem linha em branco no texto original não há
+    # como um único item legítimo ter "quebrado no meio", então cada linha
+    # não vazia já é uma referência completa.
+    if len(blocos) <= 1:
+        linhas = [l.strip() for l in texto.splitlines() if l.strip()]
+        if len(linhas) > 1:
+            blocos = linhas
+
     return [b for b in blocos if len(b) > 30]
 
 
