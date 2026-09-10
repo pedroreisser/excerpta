@@ -1058,7 +1058,7 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _build(self):
         main = ctk.CTkFrame(self, fg_color='transparent')
-        main.pack(fill='both', expand=True, padx=20, pady=16)
+        main.pack(fill='both', expand=True, padx=20, pady=(16, 10))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)   # lista expande (row 4)
 
@@ -1236,7 +1236,7 @@ class Etapa3Frame(ctk.CTkFrame):
                                   border_width=1, corner_radius=RAIO_CARD)
         frag_card.grid(row=5, column=0, sticky='ew', pady=(4, 0))
         frag_inner = ctk.CTkFrame(frag_card, fg_color='transparent')
-        frag_inner.pack(fill='x', padx=14, pady=(6, 6))
+        frag_inner.pack(fill='x', padx=14, pady=(6, 4))
 
         # Tudo numa linha só: checkbox, campo de tamanho e ajuda. A dica longa
         # de antes ("Divide em vários arquivos...") virou só o tooltip do "?"
@@ -1305,15 +1305,15 @@ class Etapa3Frame(ctk.CTkFrame):
         self._lbl_preview_frags = ctk.CTkLabel(
             frag_inner, text='', font=_font(12), text_color=TEXT_SEC,
             anchor='w', justify='left')
-        self._lbl_preview_frags.pack(fill='x', pady=(8, 0))
+        self._lbl_preview_frags.pack(fill='x', pady=(4, 0))
 
         # ── Linha 6: separador + rodapé ────────────────────────────────────────
         ctk.CTkFrame(main, fg_color=DIVIDER, height=1, corner_radius=0
-                     ).grid(row=6, column=0, sticky='ew', pady=(10, 8))
+                     ).grid(row=6, column=0, sticky='ew', pady=(6, 4))
         foot = ctk.CTkFrame(main, fg_color='transparent')
         foot.grid(row=7, column=0, sticky='ew')
         self._lbl_status3 = ctk.CTkLabel(foot, text='', font=_font(13),
-                                          text_color=TEXT_SEC, width=560,
+                                          text_color=TEXT_SEC,
                                           anchor='w')
         self._lbl_status3.pack(side='left')
         self._prog3 = ctk.CTkProgressBar(foot, mode='determinate', width=200,
@@ -2314,11 +2314,13 @@ class ExcerptaApp(ctk.CTk):
         # com tela menor (ex. 1366x768, que sobra ~700px de altura útil
         # depois da barra de tarefas) a janela abria maior que a tela e não
         # dava pra reduzir o bastante para ver o botão "Extrair artigos".
-        self.minsize(760, 520)
+        self.minsize(760, 440)
         # Abre mais estreita e mais baixa por padrão — quem quiser mais
         # espaço aumenta na mão pelo próprio gerenciador de janelas do sistema.
+        # 620, não 660: com a lista vazia sobrava ~50px de cinza no rodapé
+        # (linha de status/progresso, só usada durante uma extração).
         largura = min(860, self.winfo_screenwidth() - 80)
-        altura = min(700, self.winfo_screenheight() - 100)
+        altura = min(615, self.winfo_screenheight() - 100)
         self.geometry(f'{largura}x{altura}')
         self.configure(fg_color=BG_WINDOW)
 
