@@ -35,14 +35,15 @@ COMO USAR
 ─────────
 O Excerpta extrai seções de artigos científicos em PDF.
 
-  1. Selecione a pasta com os PDFs
-  2. Os artigos da pasta são carregados automaticamente
-  3. Escolha quais seções extrair (abstract, métodos, resultados…)
+  1. Traga os PDFs: importe do Zotero, clique em "Importar PDFs" (pasta)
+     ou arraste os arquivos para qualquer lugar da janela
+  2. Escolha quais seções extrair (abstract, métodos, resultados…)
      ou deixe "Artigo completo" marcado
-  4. Clique em "Extrair artigos"
-  5. Salve o arquivo de texto gerado
+  3. Clique em "Extrair artigos"
 
-Você também pode arrastar PDFs soltos para a lista de artigos.
+A extração sempre cria uma subpasta própria (nome configurável, campo
+"Nome de saída" ao lado de "Fragmentar arquivo de saída") — os .md gerados
+não se misturam com os PDFs originais.
 
 
 USAR COM O ZOTERO (opcional)

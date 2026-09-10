@@ -2,7 +2,7 @@
 
 Ferramenta desktop para extração seletiva de seções de artigos científicos em PDF.
 
-Selecione uma pasta com PDFs — ou importe direto do Zotero — escolha quais seções quer extrair (abstract, métodos, resultados…) e o Excerpta gera um único arquivo de texto com o conteúdo de todos os artigos.
+Importe PDFs do Zotero, de uma pasta, ou arraste-os pra qualquer lugar da janela — escolha quais seções quer extrair (abstract, métodos, resultados…) e o Excerpta gera os arquivos de texto numa subpasta própria, separados dos PDFs originais.
 
 ---
 
@@ -109,5 +109,5 @@ Arquivos gerados localmente em `codigo/` (não versionados):
 
 | Arquivo | Descrição |
 |---|---|
-| `.excerpta_settings.json` | Preferências do usuário (`mostrar_resumo`, `perguntar_abrir_pasta`) |
+| `.excerpta_settings.json` | Preferências do usuário (nome de saída, `mostrar_resumo`, `perguntar_abrir_pasta`, config. do Ollama…) |
 | `.excerpta_recent.json` | Pastas usadas recentemente |
