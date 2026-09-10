@@ -3,6 +3,7 @@ from tkinter import filedialog, messagebox
 import threading
 import os
 import sys
+import re
 import subprocess
 import shutil
 import time
@@ -13,9 +14,9 @@ import ollama_bridge
 import zotero_bridge
 from config import (
     OLLAMA_DOWNLOAD_URL, OLLAMA_INSTALL_CMD, OLLAMA_MODELO_PADRAO,
-    OLLAMA_TIMEOUT_S, OLLAMA_URL_PADRAO,
-    _get_setting, _gravar_recente, _ler_recentes, _ler_settings,
-    _salvar_settings, _set_setting,
+    OLLAMA_MODELOS_RECOMENDADOS, OLLAMA_TIMEOUT_S, OLLAMA_URL_PADRAO,
+    _get_setting, _gravar_recente, _ler_settings,
+    _pip_flags, _salvar_settings,
 )
 from duplicatas import _detectar_grupos_possiveis_duplicatas, _hash_arquivo
 from motor_pdf import (
@@ -30,11 +31,17 @@ ctk.set_default_color_theme("blue")
 # ══════════════════════════════════════ constantes ══════════════════════════════
 
 
-def _pip_flags():
-    """Flags para pip que evitam precisar de permissão de administrador."""
-    if sys.platform == 'win32':
-        return ['--user']
-    return ['--break-system-packages']
+def _nome_arquivo_seguro(nome):
+    """Remove caracteres que o SO interpretaria como separador de pasta.
+
+    Usado tanto no nome digitado pelo usuário quanto no nome herdado da
+    pasta de destino — este último pode conter '/' se vier, por exemplo, do
+    nome de uma coleção aninhada do Zotero ("Pai/Filha", como a API local
+    devolve). Sem tratamento, a barra vira um os.path.join com subpasta
+    inexistente e o Excerpta falha com "[Errno 2] No such file or directory".
+    """
+    limpo = re.sub(r'[\\/:*?"<>|]+', ' - ', nome or '').strip()
+    return limpo or 'extracao_seletiva'
 
 # ── Tipografia ────────────────────────────────────────────────────────────────
 # Pilha por plataforma: vence a primeira família instalada. Sem isso o Tk cai
@@ -71,7 +78,6 @@ S1, S2, S3, S4, S5, S6 = 4, 8, 12, 16, 20, 24
 RAIO_CARD = 10          # cartões e a lista
 RAIO_CTRL = 8           # botões, campos
 RAIO_CHIP = 15          # chips de seção (pílula)
-ALT_CTRL  = 36          # altura padrão de botão e campo
 ALT_LINHA = 34          # altura de uma linha da lista de artigos
 
 # ── Paleta Zotero-inspirada (tema claro) ──────────────────────────────────────
@@ -79,16 +85,17 @@ ALT_LINHA = 34          # altura de uma linha da lista de artigos
 BG_WINDOW   = "#F3F4F6"
 BG_CARD     = "#FFFFFF"
 BG_PANEL    = "#ECEEF1"
+BG_ZEBRA    = "#F7F8FA"   # linha ímpar da lista, alterna com BG_CARD
 
-ACCENT      = "#3D6CAE"
-ACCENT_HOV  = "#2D5599"
-ACCENT_LT   = "#EEF3FA"
-ACCENT_BORD = "#B6CCE8"
-ACCENT_TXT  = "#2B4F8C"
+ACCENT       = "#3D6CAE"
+ACCENT_HOV   = "#2D5599"
+ACCENT_LT    = "#EEF3FA"
+ACCENT_LT_HOV = "#E2EBF7"
+ACCENT_BORD  = "#B6CCE8"
+ACCENT_TXT   = "#2B4F8C"
 
 GREEN       = "#2E7D4F"
 GREEN_HOV   = "#1E6040"
-GREEN_LT    = "#EEF8F2"
 GREEN_BORD  = "#A4D4B4"
 GREEN_HDR   = "#EAF5EF"
 GREEN_TXT   = "#1A5C36"
@@ -102,13 +109,22 @@ TEXT_OFF    = "#9CA3AF"   # desabilitado: apagado, mas ainda legível
 DIVIDER     = "#E2E4E8"
 
 C_OK        = "#2E7D4F"
-C_WARN      = "#B45309"
-C_WARN_LT   = "#FFF7ED"
-C_WARN_BORD = "#F0C48A"
-C_ERR       = "#B91C1C"
+C_WARN       = "#B45309"
+C_WARN_HOV   = "#8B3A00"
+C_WARN_LT    = "#FFF7ED"
+C_WARN_LT_HOV = "#FCEBD8"
+C_WARN_BORD  = "#F0C48A"
+C_ERR        = "#B91C1C"
+C_ERR_HOV    = "#8F1616"
+C_ERR_LT     = "#FEF2F2"
+C_ERR_LT_HOV = "#FCE3E3"
+C_ERR_BORD   = "#F3B7B7"
 
 _COR_PYMUPDF = ACCENT
 _COR_DOCLING = "#7C3AED"
+_COR_DOCLING_LT      = "#F5F0FE"
+_COR_DOCLING_LT_HOV  = "#EBE1FC"
+_COR_DOCLING_BORD    = "#D4C2F5"
 
 
 # ══════════════════════════════════════ helpers ══════════════════════════════════
@@ -160,53 +176,6 @@ def _montar_colunas(frame):
     frame.grid_rowconfigure(0, weight=1)
 
 
-# ── Histórico de pastas / arquivos recentes ───────────────────────────────────
-
-def _btn_recentes(parent, entry, chave, on_select):
-    """Botão ▾ que abre popup com os caminhos recentes."""
-    import tkinter as tk
-    btn_ref = [None]
-
-    def _abrir():
-        dados = _ler_recentes()
-        lista = dados.get(chave, [])
-        menu = tk.Menu(parent, tearoff=0, font=(F, 12))
-        if lista:
-            for item in lista:
-                display = item if len(item) <= 60 else '…' + item[-57:]
-                menu.add_command(
-                    label=display,
-                    command=lambda v=item: [
-                        entry.delete(0, 'end'),
-                        entry.insert(0, v),
-                        on_select(v),
-                    ]
-                )
-        else:
-            menu.add_command(label='(sem histórico)', state='disabled')
-        b = btn_ref[0]
-        menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 2)
-
-    btn = ctk.CTkButton(parent, text='▾', width=34, height=34,
-                        fg_color=BG_PANEL, hover_color=GRAY_BORD,
-                        text_color=TEXT_SEC, font=_font(14),
-                        border_width=0, command=_abrir)
-    btn.pack(side='left', padx=(4, 0))
-    btn_ref[0] = btn
-    return btn
-
-
-def _bind_dnd_entry(entry, callback):
-    """Registra drag-and-drop no campo de entrada (requer tkinterdnd2)."""
-    try:
-        from tkinterdnd2 import DND_FILES
-        inner = entry._entry
-        inner.drop_target_register(DND_FILES)
-        inner.dnd_bind('<<Drop>>', callback)
-    except Exception:
-        pass
-
-
 def _bind_dnd_lista(scrollable_frame, callback):
     """Registra drag-and-drop na lista de artigos (CTkScrollableFrame).
 
@@ -245,19 +214,32 @@ def _bind_dnd_widget(widget, callback):
         pass
 
 
+def _bind_dnd_recursivo(widget, callback, pular=()):
+    """Registra o mesmo drop em `widget` e em todos os seus descendentes.
+
+    O tkdnd só entrega o evento pro widget exato sob o cursor no momento do
+    drop — não propaga pros pais como um bind normal do Tk. Sem isso, soltar
+    um PDF em qualquer área que não fosse a lista de artigos ou o campo de
+    pasta simplesmente não fazia nada. `pular` marca widgets com drop
+    específico próprio (ex.: o rótulo da pasta, que interpreta a soltura
+    como "usar esta pasta" em vez de "adicionar este PDF").
+    """
+    try:
+        from tkinterdnd2 import DND_FILES, DND_TEXT
+    except ImportError:
+        return
+    if widget not in pular:
+        alvo = getattr(widget, '_canvas', widget)
+        try:
+            alvo.drop_target_register(DND_FILES, DND_TEXT)
+            alvo.dnd_bind('<<Drop>>', callback)
+        except Exception:
+            pass
+    for filho in widget.winfo_children():
+        _bind_dnd_recursivo(filho, callback, pular)
+
+
 # ══════════════════════════════════════ cabeçalho compartilhado ═══════════════════
-
-def _header(parent, bg, txt_color, titulo):
-    hdr = ctk.CTkFrame(parent, fg_color=bg, corner_radius=0, height=52)
-    hdr.pack(fill='x')
-    hdr.pack_propagate(False)
-    ctk.CTkFrame(parent, fg_color=DIVIDER, height=1, corner_radius=0).pack(fill='x')
-
-    ctk.CTkLabel(hdr, text=titulo, font=_font(15, 'bold'),
-                 text_color=txt_color).pack(side='left', padx=14, pady=10)
-
-    return hdr
-
 
 # ══════════════════════════════════════ configurações ════════════════════════════
 
@@ -303,8 +285,8 @@ class SettingsDialog(ctk.CTkToplevel):
                      command=self._fechar).pack(pady=(0, 16))
 
         self.update_idletasks()
-        self.minsize(520, 560)
-        self.geometry('620x680')
+        self.minsize(480, 460)
+        self.geometry('560x560')
         self.bind('<Configure>', self._on_resize)
         self.deiconify()
         self.lift()
@@ -329,31 +311,6 @@ class SettingsDialog(ctk.CTkToplevel):
     def _build_aba_geral(self, tab, cfg):
         inner = ctk.CTkScrollableFrame(tab, fg_color='transparent')
         inner.pack(fill='both', expand=True)
-
-        # ── Arquivo de saída ──────────────────────────────────────────────────
-        ctk.CTkLabel(inner, text='Arquivo de saída',
-                     font=_font(12, 'bold'), text_color=TEXT_SEC
-                     ).pack(pady=(6, 6), anchor='w')
-
-        row_nome = ctk.CTkFrame(inner, fg_color='transparent')
-        row_nome.pack(fill='x', pady=(0, 4))
-        ctk.CTkLabel(row_nome, text='Nome base dos fragmentos:',
-                     font=_font(12), text_color=TEXT_PRI,
-                     width=190, anchor='w').pack(side='left')
-        self._entry_nome = ctk.CTkEntry(row_nome, width=170, height=30,
-                                         font=_font(13),
-                                         placeholder_text='ex: minha_extracao')
-        self._entry_nome.pack(side='left')
-        nome_salvo = cfg.get('nome_base', '')
-        if nome_salvo:
-            self._entry_nome.insert(0, nome_salvo)
-
-        ctk.CTkLabel(inner,
-                     text='Atualizado automaticamente com o nome da pasta selecionada.',
-                     font=_font(11), text_color=TEXT_SEC
-                     ).pack(pady=(0, 12), anchor='w')
-
-        _sep(inner, pady=(0, 10))
 
         # ── Motores de extração ───────────────────────────────────────────────
         row_ocr_hdr = ctk.CTkFrame(inner, fg_color='transparent')
@@ -380,9 +337,8 @@ class SettingsDialog(ctk.CTkToplevel):
                       ).pack(side='left', padx=(8, 0))
 
         self._texto_corrido(
-            inner,
-            'Requer docling instalado. PDFs escaneados são imagens sem texto digital.'
-            ).pack(pady=(0, 12), anchor='w', fill='x')
+            inner, 'PDF escaneado = imagem sem texto; requer docling.'
+            ).pack(pady=(0, 8), anchor='w', fill='x')
 
         if not DOCLING_OK:
             row_docling = ctk.CTkFrame(inner, fg_color='transparent')
@@ -417,7 +373,7 @@ class SettingsDialog(ctk.CTkToplevel):
                         font=_font(13), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
-                        ).pack(anchor='w', pady=(0, 8))
+                        ).pack(anchor='w', pady=(0, 4))
 
         self._var_pasta = ctk.BooleanVar(value=cfg.get('perguntar_abrir_pasta', True))
         ctk.CTkCheckBox(inner,
@@ -426,7 +382,7 @@ class SettingsDialog(ctk.CTkToplevel):
                         font=_font(13), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD
-                        ).pack(anchor='w', pady=(0, 8))
+                        ).pack(anchor='w', pady=(0, 4))
 
         self._var_log = ctk.BooleanVar(value=cfg.get('log_diagnostico', True))
         ctk.CTkCheckBox(inner,
@@ -437,9 +393,7 @@ class SettingsDialog(ctk.CTkToplevel):
                         border_color=GRAY_BORD
                         ).pack(anchor='w', pady=(0, 2))
         self._texto_corrido(
-            inner,
-            'Arquivo técnico (excerpta_debug.log) com detalhes de cada artigo '
-            '— envie-o se der problema.'
+            inner, 'Gera excerpta_debug.log — envie-o se der problema.'
             ).pack(pady=(0, 8), anchor='w', fill='x')
 
     # ── aba IA local ────────────────────────────────────────────────────────
@@ -488,10 +442,7 @@ class SettingsDialog(ctk.CTkToplevel):
                              command=lambda: webbrowser.open(OLLAMA_DOWNLOAD_URL)
                              ).pack(anchor='w', pady=(0, 4))
             self._texto_corrido(
-                inner,
-                'O resto desta aba só faz sentido depois de instalado — '
-                'os campos abaixo já ficam configurados, é só ativar quando '
-                'o Ollama estiver pronto.'
+                inner, 'O resto da aba já fica configurado — só ative depois de instalar.'
                 ).pack(pady=(6, 4), anchor='w', fill='x')
 
         _sep(inner, pady=(10, 10))
@@ -507,9 +458,7 @@ class SettingsDialog(ctk.CTkToplevel):
                         border_color=GRAY_BORD
                         ).pack(anchor='w', pady=(0, 4))
         self._texto_corrido(
-            inner,
-            'Desligado por padrão. Se o Ollama não responder, o Excerpta usa '
-            'o fallback normal sem travar.'
+            inner, 'Desligado por padrão; se o Ollama não responder, usa o fallback normal.'
             ).pack(pady=(0, 12), anchor='w', fill='x')
 
         # ── 3. Configuração do modelo ───────────────────────────────────────
@@ -524,10 +473,20 @@ class SettingsDialog(ctk.CTkToplevel):
         row_url.pack(fill='x', pady=(0, 6))
         ctk.CTkLabel(row_url, text='Servidor:', font=_font(12),
                      text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
-        self._entry_ollama_url = ctk.CTkEntry(row_url, width=220, height=30,
+        self._entry_ollama_url = ctk.CTkEntry(row_url, width=190, height=30,
                                                font=_font(12))
         self._entry_ollama_url.insert(0, cfg.get('ollama_url', OLLAMA_URL_PADRAO))
         self._entry_ollama_url.pack(side='left')
+        ctk.CTkLabel(row_url, text='Timeout:', font=_font(12),
+                     text_color=TEXT_PRI).pack(side='left', padx=(14, 6))
+        self._entry_ollama_timeout = ctk.CTkEntry(row_url, width=50, height=30,
+                                                   font=_font(12))
+        self._entry_ollama_timeout.insert(
+            0, str(cfg.get('ollama_timeout_s', OLLAMA_TIMEOUT_S)))
+        self._entry_ollama_timeout.pack(side='left')
+        ctk.CTkLabel(row_url, text='s/artigo',
+                     font=_font(11), text_color=TEXT_SEC
+                     ).pack(side='left', padx=(4, 0))
 
         row_modelo = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
         row_modelo.pack(fill='x', pady=(0, 6))
@@ -547,23 +506,8 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._atualizar_modelos_ollama)
         self._btn_atualizar_modelos.pack(side='left', padx=(6, 0))
 
-        row_timeout = ctk.CTkFrame(self._row_ollama_fields, fg_color='transparent')
-        row_timeout.pack(fill='x')
-        ctk.CTkLabel(row_timeout, text='Timeout:', font=_font(12),
-                     text_color=TEXT_PRI, width=80, anchor='w').pack(side='left')
-        self._entry_ollama_timeout = ctk.CTkEntry(row_timeout, width=70, height=30,
-                                                   font=_font(12))
-        self._entry_ollama_timeout.insert(
-            0, str(cfg.get('ollama_timeout_s', OLLAMA_TIMEOUT_S)))
-        self._entry_ollama_timeout.pack(side='left')
-        ctk.CTkLabel(row_timeout, text='segundos por artigo',
-                     font=_font(11), text_color=TEXT_SEC
-                     ).pack(side='left', padx=(8, 0))
-
         self._texto_corrido(
-            inner,
-            'Num PC sem GPU, um modelo 7B leva ~2 min por artigo — se o '
-            'timeout for curto demais, a IA é ignorada em silêncio.'
+            inner, 'PC sem GPU: ~2 min/artigo num modelo 7B — timeout curto demais ignora a IA.'
             ).pack(pady=(2, 12), anchor='w', fill='x')
 
         # ── 4. Modelo: status e ações ────────────────────────────────────
@@ -576,32 +520,24 @@ class SettingsDialog(ctk.CTkToplevel):
                      font=_font(12, 'bold'), text_color=TEXT_PRI
                      ).pack(anchor='w', pady=(0, 8))
 
-        row_carregar = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
-        row_carregar.pack(fill='x')
+        # Pré-carregar e baixar lado a lado: são as duas ações desse card,
+        # os próprios rótulos já dizem o que fazem — a legenda separada de
+        # antes só repetia isso com mais palavras.
+        row_acoes = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
+        row_acoes.pack(fill='x')
         self._btn_carregar_modelo = ctk.CTkButton(
-            row_carregar, text='Pré-carregar modelo', width=160, height=28,
+            row_acoes, text='Pré-carregar', width=120, height=28,
             fg_color=BG_CARD, hover_color=GRAY_BORD,
             text_color=TEXT_PRI, font=_font(12),
             border_width=1, border_color=GRAY_BORD,
             command=self._carregar_modelo_ollama)
         self._btn_carregar_modelo.pack(side='left')
-        ctk.CTkLabel(row_carregar, text='deixa o modelo pronto antes da extração',
-                     font=_font(11), text_color=TEXT_SEC
-                     ).pack(side='left', padx=(10, 0))
-
-        _sep(card_modelo_in, pady=(10, 10))
-
-        row_pull = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
-        row_pull.pack(fill='x')
-        self._btn_pull = ctk.CTkButton(row_pull, text='Baixar modelo', width=140,
+        self._btn_pull = ctk.CTkButton(row_acoes, text='Baixar modelo', width=130,
                                         height=28, fg_color=GREEN,
                                         hover_color=GREEN_HOV, text_color='white',
                                         font=_font(12, 'bold'),
                                         command=self._baixar_modelo_ollama)
-        self._btn_pull.pack(side='left')
-        ctk.CTkLabel(row_pull, text='baixa o modelo acima do catálogo do Ollama',
-                     font=_font(11), text_color=TEXT_SEC
-                     ).pack(side='left', padx=(10, 0))
+        self._btn_pull.pack(side='left', padx=(8, 0))
         row_pull_status = ctk.CTkFrame(card_modelo_in, fg_color='transparent')
         row_pull_status.pack(fill='x')
         self._lbl_pull = ctk.CTkLabel(row_pull_status, text='', font=_font(11),
@@ -640,14 +576,18 @@ class SettingsDialog(ctk.CTkToplevel):
             return OLLAMA_TIMEOUT_S
 
     def _atualizar_modelos_ollama(self):
-        """Preenche o dropdown com os modelos instalados, sem travar a GUI."""
+        """Preenche o dropdown com os modelos instalados + recomendados,
+        sem travar a GUI. Recomendados que já estão instalados não se repetem."""
         url = self._url_ollama()
 
         def _buscar():
             try:
-                modelos = ollama_bridge.listar_modelos(url)
+                instalados = ollama_bridge.listar_modelos(url)
             except ollama_bridge.OllamaErro:
-                return
+                instalados = []
+            recomendados = [m for m in OLLAMA_MODELOS_RECOMENDADOS
+                             if m not in instalados]
+            modelos = instalados + recomendados
             def _aplicar():
                 atual = self._entry_ollama_modelo.get()
                 self._entry_ollama_modelo.configure(values=modelos)
@@ -705,7 +645,7 @@ class SettingsDialog(ctk.CTkToplevel):
         url, modelo = self._url_ollama(), self._modelo_ollama()
         self._pull_ativo, self._pull_cancelado = True, False
         self._btn_pull.configure(text='Cancelar', fg_color=C_ERR,
-                                 hover_color='#8f1616')
+                                 hover_color=C_ERR_HOV)
         self._lbl_pull.configure(text=f'baixando {modelo}…', text_color=TEXT_SEC)
         self._pb_pull.set(0)
         self._pb_pull.pack(fill='x', pady=(6, 0))
@@ -942,7 +882,6 @@ class SettingsDialog(ctk.CTkToplevel):
     def _fechar(self):
         _salvar_settings({
             **_ler_settings(),
-            'nome_base': self._entry_nome.get().strip(),
             'usar_ocr': self._var_ocr.get(),
             'mostrar_resumo': self._var_resumo.get(),
             'perguntar_abrir_pasta': self._var_pasta.get(),
@@ -1118,62 +1057,46 @@ class Etapa3Frame(ctk.CTkFrame):
         self._zot_tick()
 
     def _build(self):
-        hdr = _header(self, bg=GREEN_HDR, txt_color=GREEN_TXT,
-                      titulo='Excerpta — Extração Seletiva de Artigos')
-        ctk.CTkButton(hdr, text='⚙  Configurações', width=130, height=34,
-                      fg_color='transparent', hover_color=GREEN_LT,
-                      text_color=GREEN_TXT, font=_font(12),
-                      border_width=1, border_color=GREEN_BORD,
-                      command=self._abrir_settings
-                      ).pack(side='right', padx=14, pady=9)
-
         main = ctk.CTkFrame(self, fg_color='transparent')
         main.pack(fill='both', expand=True, padx=20, pady=16)
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)   # lista expande (row 4)
 
-        # ── Linha 0: inputs (pasta + IA + atalho direto) ──────────────────────
+        # ── Linha 0: Zotero (esquerda) + importar pasta / configurações (direita) ──
+        # Tudo numa linha só, compacto — cabe em telas menores sem esconder o
+        # essencial. "Excerpta" já aparece no título da janela, não precisa
+        # repetir aqui. Zotero é o fluxo mais usado hoje, por isso fica à
+        # esquerda com mais espaço; pasta e configurações são secundários.
         cfg = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
                            border_width=1, corner_radius=RAIO_CARD)
         cfg.grid(row=0, column=0, sticky='ew', pady=(0, 6))
-
-        r1 = ctk.CTkFrame(cfg, fg_color='transparent')
-        r1.pack(fill='x', padx=16, pady=(12, 12))
-        ctk.CTkLabel(r1, text='Pasta dos PDFs', font=_font(14, 'bold'),
-                    text_color=TEXT_PRI, width=148, anchor='w').pack(side='left')
-        self._entry_pasta3 = ctk.CTkEntry(
-            r1, placeholder_text='Cole, arraste ou selecione a pasta…',
-            font=_font(14), height=34)
-        self._entry_pasta3.pack(side='left', fill='x', expand=True, padx=(0, 8))
-        self._entry_pasta3.bind('<Return>', lambda _: self._aplicar_pasta3(
-            self._entry_pasta3.get().strip()))
-        ctk.CTkButton(r1, text='Selecionar', width=110,
-                     fg_color=GREEN, hover_color=GREEN_HOV, height=34,
-                     font=_font(14), command=self._sel_pasta3).pack(side='left')
-        ctk.CTkButton(r1, text='Nova pasta', width=100,
-                     fg_color=BG_PANEL, hover_color=GRAY_BORD,
-                     text_color=TEXT_PRI, height=34, font=_font(13),
-                     border_width=1, border_color=GRAY_BORD,
-                     command=self._nova_pasta3).pack(side='left', padx=(6, 0))
-        _btn_recentes(r1, self._entry_pasta3, 'pastas', self._aplicar_pasta3)
-        _bind_dnd_entry(self._entry_pasta3, self._on_dnd_pasta3)
-
-        # ── Zotero: espelha a coleção aberta na janela do Zotero ───────────
-        ctk.CTkFrame(cfg, fg_color=DIVIDER, height=1,
-                     corner_radius=0).pack(fill='x', padx=16)
         rz = ctk.CTkFrame(cfg, fg_color='transparent')
-        rz.pack(fill='x', padx=16, pady=(10, 12))
+        rz.pack(fill='x', padx=16, pady=12)
+
+        ctk.CTkButton(rz, text='⚙  Configurações', width=130, height=34,
+                      fg_color=BG_PANEL, hover_color=GRAY_BORD,
+                      text_color=TEXT_PRI, font=_font(12, 'bold'),
+                      border_width=1, border_color=GRAY_BORD,
+                      command=self._abrir_settings).pack(side='right')
+        self._btn_pasta3 = ctk.CTkButton(
+            rz, text='Importar PDFs', height=34,
+            fg_color=BG_PANEL, hover_color=GRAY_BORD,
+            text_color=TEXT_PRI, font=_font(13, 'bold'),
+            border_width=1, border_color=GRAY_BORD,
+            command=self._sel_pasta3)
+        self._btn_pasta3.pack(side='right', padx=(0, 8))
+        _bind_dnd_widget(self._btn_pasta3, self._on_dnd_pasta3)
+
         ctk.CTkLabel(rz, text='Zotero', font=_font(14, 'bold'),
-                     text_color=TEXT_PRI, width=148, anchor='w').pack(side='left')
-        self._lbl_zot = ctk.CTkLabel(rz, text='verificando…', font=_font(13),
+                     text_color=TEXT_PRI, anchor='w').pack(side='left')
+        self._lbl_zot = ctk.CTkLabel(rz, text='verificando…', font=_font(14),
                                      text_color=TEXT_SEC, anchor='w')
-        self._lbl_zot.pack(side='left', fill='x', expand=True)
+        self._lbl_zot.pack(side='left', fill='x', expand=True, padx=(10, 10))
         self._btn_zot_importar = ctk.CTkButton(
             rz, text='Importar PDFs', width=140, height=34,
             fg_color=ACCENT, hover_color=ACCENT_HOV,
-            text_color='white', font=_font(13, 'bold'),
+            text_color='white', font=_font(14, 'bold'),
             command=self._zot_importar)
-
 
         # ── Linha 1: seções a extrair ──────────────────────────────────────────
         sec_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
@@ -1184,15 +1107,20 @@ class Etapa3Frame(ctk.CTkFrame):
 
         row_hdr = ctk.CTkFrame(inner3, fg_color='transparent')
         row_hdr.pack(fill='x', pady=(0, 8))
-        ctk.CTkLabel(row_hdr, text='Seções a extrair', font=_font(13, 'bold'),
-                     text_color=TEXT_PRI, anchor='w').pack(side='left')
+        # No lugar do rótulo "Seções a extrair": o botão já deixa claro do
+        # que se trata, e ganha o espaço todo à esquerda.
         self._btn_tudo_chip = ctk.CTkButton(
             row_hdr, text='Artigo completo', width=140, height=32,
             corner_radius=RAIO_CHIP,
             fg_color=GREEN, hover_color=GREEN_HOV, text_color='white',
             font=_font(12, 'bold'), border_width=1, border_color=GREEN_BORD,
             command=self._on_tudo_toggle)
-        self._btn_tudo_chip.pack(side='right')
+        self._btn_tudo_chip.pack(side='left')
+        ctk.CTkCheckBox(row_hdr, text='Se não encontrar, usa completo',
+                        variable=self._var_fallback,
+                        font=_font(11), checkmark_color='white',
+                        fg_color=GREEN, hover_color=GREEN_HOV,
+                        border_color=GRAY_BORD).pack(side='left', padx=(14, 0))
 
         sec_labels = [
             ('abstract',   'Abstract'),
@@ -1222,14 +1150,6 @@ class Etapa3Frame(ctk.CTkFrame):
             b.pack(side='left', padx=(0, S2))
             self._sec_btns[key] = b
 
-        _sep(inner3, pady=(10, 6))
-        ctk.CTkCheckBox(inner3,
-                        text='Se nenhuma seção encontrada, extrair artigo completo',
-                        variable=self._var_fallback,
-                        font=_font(11), checkmark_color='white',
-                        fg_color=GREEN, hover_color=GREEN_HOV,
-                        border_color=GRAY_BORD).pack(anchor='w')
-
         # ── Linha 2: painel de análise de motores ──────────────────────────────
         self._frame_analise = ctk.CTkFrame(main, fg_color=BG_CARD,
                                             border_color=DIVIDER, border_width=1,
@@ -1240,35 +1160,39 @@ class Etapa3Frame(ctk.CTkFrame):
         # ── Linha 3: cabeçalho da lista ────────────────────────────────────────
         row_lhdr = ctk.CTkFrame(main, fg_color='transparent')
         row_lhdr.grid(row=3, column=0, sticky='ew', pady=(0, 4))
-        ctk.CTkLabel(row_lhdr, text='Artigos selecionados',
-                     font=_font(14, 'bold'), text_color=TEXT_PRI,
-                     anchor='w').pack(side='left')
         self._lbl_resumo = ctk.CTkLabel(row_lhdr, text='', font=_font(13),
                                          text_color=TEXT_SEC)
-        self._lbl_resumo.pack(side='left', padx=10)
+        self._lbl_resumo.pack(side='left')
         # Contornados de propósito: são ações auxiliares e, preenchidos, roubavam
         # a atenção do "Extrair artigos", que é a ação principal da tela.
         self._btn_rem_dup3 = ctk.CTkButton(
             row_lhdr, text='Remover duplicatas', width=148, height=30,
             corner_radius=RAIO_CTRL,
-            fg_color=C_WARN_LT, hover_color='#FCEBD8',
+            fg_color=C_WARN_LT, hover_color=C_WARN_LT_HOV,
             text_color=C_WARN, font=_font(12, 'bold'),
             border_width=1, border_color=C_WARN_BORD,
             command=self._remover_duplicatas_e3)
         self._btn_revisar_poss3 = ctk.CTkButton(
             row_lhdr, text='Revisar possíveis duplicatas', width=190, height=30,
             corner_radius=RAIO_CTRL,
-            fg_color=ACCENT_LT, hover_color='#E2EBF7',
+            fg_color=ACCENT_LT, hover_color=ACCENT_LT_HOV,
             text_color=ACCENT_TXT, font=_font(12, 'bold'),
             border_width=1, border_color=ACCENT_BORD,
             command=self._abrir_revisao_possiveis_duplicatas)
         self._btn_limpar = ctk.CTkButton(
             row_lhdr, text='Limpar lista', width=104, height=30,
             corner_radius=RAIO_CTRL,
-            fg_color='transparent', hover_color=BG_PANEL,
-            text_color=TEXT_SEC, font=_font(12),
-            border_width=1, border_color=GRAY_BORD,
+            fg_color=C_ERR_LT, hover_color=C_ERR_LT_HOV,
+            text_color=C_ERR, font=_font(12, 'bold'),
+            border_width=1, border_color=C_ERR_BORD,
             command=self._limpar_lista)
+        self._btn_limpar_ocr = ctk.CTkButton(
+            row_lhdr, text='Limpar OCR', width=104, height=30,
+            corner_radius=RAIO_CTRL,
+            fg_color=_COR_DOCLING_LT, hover_color=_COR_DOCLING_LT_HOV,
+            text_color=_COR_DOCLING, font=_font(12, 'bold'),
+            border_width=1, border_color=_COR_DOCLING_BORD,
+            command=self._limpar_ocr)
 
         # ── Linha 4: lista de artigos (expande) ────────────────────────────────
         # Cartão externo dá borda e cantos; dentro dele vão o cabeçalho fixo de
@@ -1310,49 +1234,70 @@ class Etapa3Frame(ctk.CTkFrame):
         # ── Linha 5: fragmentação ──────────────────────────────────────────────
         frag_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
                                   border_width=1, corner_radius=RAIO_CARD)
-        frag_card.grid(row=5, column=0, sticky='ew', pady=(6, 0))
+        frag_card.grid(row=5, column=0, sticky='ew', pady=(4, 0))
         frag_inner = ctk.CTkFrame(frag_card, fg_color='transparent')
-        frag_inner.pack(fill='x', padx=14, pady=(8, 10))
+        frag_inner.pack(fill='x', padx=14, pady=(6, 6))
 
+        # Tudo numa linha só: checkbox, campo de tamanho e ajuda. A dica longa
+        # de antes ("Divide em vários arquivos...") virou só o tooltip do "?"
+        # — o nome do checkbox já entrega o essencial.
         row_fhdr = ctk.CTkFrame(frag_inner, fg_color='transparent')
-        row_fhdr.pack(fill='x', pady=(0, 6))
+        row_fhdr.pack(fill='x')
         ctk.CTkCheckBox(row_fhdr, text='Fragmentar arquivo de saída',
                         variable=self._var_fragmentar,
                         command=self._on_fragmentar_toggle,
                         font=_font(13, 'bold'), checkmark_color='white',
                         fg_color=GREEN, hover_color=GREEN_HOV,
                         border_color=GRAY_BORD).pack(side='left')
-        ctk.CTkLabel(row_fhdr,
-                     text='Divide em vários arquivos respeitando artigos inteiros',
-                     font=_font(11), text_color=TEXT_SEC).pack(side='left', padx=(10, 0))
 
-        # Uma única linha, tudo em pack e alinhado à esquerda: rótulo, campo,
-        # unidade e ajuda. A dica sai da linha e vira legenda embaixo, para o
-        # controle não competir com texto solto.
-        self._row_frag_fields = ctk.CTkFrame(frag_inner, fg_color='transparent')
-        self._row_frag_fields.pack(fill='x')
+        self._row_frag_fields = ctk.CTkFrame(row_fhdr, fg_color='transparent')
+        self._row_frag_fields.pack(side='left', padx=(16, 0))
 
-        ctk.CTkLabel(self._row_frag_fields, text='Máximo por arquivo',
+        ctk.CTkLabel(self._row_frag_fields, text='máx.',
                      font=_font(12), text_color=TEXT_SEC, anchor='w'
-                     ).pack(side='left', padx=(0, 10))
+                     ).pack(side='left', padx=(0, 6))
         self._entry_frag_kb = ctk.CTkEntry(
-            self._row_frag_fields, width=76, height=30, font=_font(13),
+            self._row_frag_fields, width=64, height=28, font=_font(13),
             justify='center')
         self._entry_frag_kb.insert(0, '500')
         self._entry_frag_kb.configure(state='disabled')
         self._entry_frag_kb.pack(side='left')
         ctk.CTkLabel(self._row_frag_fields, text='KB', font=_font(12),
                      text_color=TEXT_SEC).pack(side='left', padx=(6, 0))
-        # Botão redondo: um quadrado de 26px com "?" dentro fica apertado e
-        # briga visualmente com o campo ao lado. corner_radius = metade da
-        # altura deixa o círculo exato.
-        ctk.CTkButton(self._row_frag_fields, text='?', width=24, height=24,
-                     corner_radius=12,
-                     fg_color='transparent', hover_color=ACCENT_LT,
-                     text_color=ACCENT, font=_font(12, 'bold'),
-                     border_width=1, border_color=ACCENT_BORD,
+        # Texto em vez de ícone: diz exatamente o que o botão abre (tamanhos
+        # recomendados por modelo de IA), sem depender de o usuário adivinhar
+        # o símbolo.
+        ctk.CTkButton(self._row_frag_fields, text='Recomendação', height=22,
+                     corner_radius=11,
+                     fg_color=ACCENT_LT, hover_color=ACCENT_LT_HOV,
+                     text_color=ACCENT, font=_font(11, 'bold'),
+                     border_width=0,
                      command=self._mostrar_ajuda_fragmentar
                      ).pack(side='left', padx=(10, 0))
+
+        # "Extrair artigos" na mesma linha e mesma altura do checkbox de
+        # fragmentar — é a ação final, faz sentido fechar essa linha em vez
+        # de abrir mais uma só pra ele lá embaixo.
+        self._btn_extrair = ctk.CTkButton(
+            row_fhdr, text='↓  Extrair artigos', width=160,
+            fg_color=GREEN, hover_color=GREEN_HOV, height=30,
+            font=_font(14, 'bold'), state='disabled', command=self._extrair)
+        self._btn_extrair.pack(side='right')
+
+        # Nome de saída: morava em Configurações, mudou pra cá porque é usado
+        # toda hora, junto do resto da fragmentação.
+        row_nome_saida = ctk.CTkFrame(frag_inner, fg_color='transparent')
+        row_nome_saida.pack(fill='x', pady=(6, 0))
+        ctk.CTkLabel(row_nome_saida, text='Nome de saída:', font=_font(12),
+                     text_color=TEXT_SEC).pack(side='left')
+        self._entry_nome_saida = ctk.CTkEntry(
+            row_nome_saida, width=170, height=26, font=_font(12),
+            placeholder_text='ex: minha_extracao')
+        self._entry_nome_saida.insert(0, _get_setting('nome_base', ''))
+        self._entry_nome_saida.pack(side='left', padx=(8, 0))
+        ctk.CTkLabel(row_nome_saida, text='vazio = nome da pasta de destino',
+                     font=_font(11), text_color=TEXT_SEC
+                     ).pack(side='left', padx=(8, 0))
 
         self._entry_frag_kb.bind('<KeyRelease>',
                                   lambda _: self._atualizar_preview_fragmentos())
@@ -1373,11 +1318,11 @@ class Etapa3Frame(ctk.CTkFrame):
         self._lbl_status3.pack(side='left')
         self._prog3 = ctk.CTkProgressBar(foot, mode='determinate', width=200,
                                           height=6, progress_color=GREEN, fg_color=DIVIDER)
-        self._btn_extrair = ctk.CTkButton(
-            foot, text='↓  Extrair artigos', width=160,
-            fg_color=GREEN, hover_color=GREEN_HOV, height=36,
-            font=_font(14, 'bold'), state='disabled', command=self._extrair)
-        self._btn_extrair.pack(side='right')
+
+        # Qualquer área da tela aceita soltar PDFs — não só a lista de
+        # artigos. O rótulo da pasta fica de fora porque ele já interpreta a
+        # soltura de outro jeito (define a pasta, não adiciona à lista).
+        _bind_dnd_recursivo(self, self._on_dnd_lista, pular={self._btn_pasta3})
 
     # ── lógica ──────────────────────────────────────────────────────────────────
 
@@ -1471,10 +1416,14 @@ class Etapa3Frame(ctk.CTkFrame):
                 text='⚠  Valor de KB inválido', text_color=C_WARN)
             return
 
+        # Texto/markdown extraído de um PDF científico costuma ficar entre
+        # 3% e 8% do tamanho do PDF original; 0.008 (0.8%) subestimava tanto
+        # que o número de fragmentos praticamente nunca mudava ao editar a
+        # lista, só o KB total exibido.
         total_est_kb = 0.0
         for art in prontos:
             try:
-                total_est_kb += os.path.getsize(art['caminho']) / 1024 * 0.008
+                total_est_kb += os.path.getsize(art['caminho']) / 1024 * 0.05
             except OSError:
                 total_est_kb += 25.0
 
@@ -1501,27 +1450,11 @@ class Etapa3Frame(ctk.CTkFrame):
         if pasta:
             self._aplicar_pasta3(pasta)
 
-    def _nova_pasta3(self):
-        """Cria uma pasta nova sem precisar sair do Excerpta e voltar depois
-        pra selecioná-la — o diálogo padrão do sistema nem sempre tem essa
-        opção (falta no seletor do Linux, por exemplo).
-        """
-        pai = filedialog.askdirectory(
-            title='Onde criar a nova pasta?',
-            initialdir=self._pasta or os.path.expanduser('~'))
-        if not pai:
-            return
-        nome = ctk.CTkInputDialog(
-            title='Nova pasta', text='Nome da nova pasta:').get_input()
-        if not nome or not nome.strip():
-            return
-        nova = os.path.join(pai, nome.strip())
-        try:
-            os.makedirs(nova, exist_ok=True)
-        except OSError as exc:
-            messagebox.showerror('Erro', f'Não foi possível criar a pasta:\n{exc}')
-            return
-        self._aplicar_pasta3(nova)
+    def _limpar_pasta3(self):
+        """Desfaz a seleção de pasta — clicar de novo no botão volta a abrir
+        o diálogo em vez de reabrir a mesma pasta."""
+        self._pasta = ''
+        self._btn_pasta3.configure(text='Importar PDFs', command=self._sel_pasta3)
 
     def _aplicar_pasta3(self, pasta):
         if not pasta:
@@ -1539,10 +1472,10 @@ class Etapa3Frame(ctk.CTkFrame):
                 messagebox.showerror('Erro', f'Não foi possível criar a pasta:\n{exc}')
                 return
         self._pasta = pasta
-        self._entry_pasta3.delete(0, 'end')
-        self._entry_pasta3.insert(0, pasta)
+        self._btn_pasta3.configure(
+            text=os.path.basename(pasta.rstrip(os.sep)) or pasta,
+            command=self._limpar_pasta3)
         _gravar_recente('pastas', pasta)
-        _set_setting('nome_base', os.path.basename(pasta))
         # Carrega automaticamente todos os PDFs da pasta
         pdfs = sorted(f for f in os.listdir(pasta) if f.lower().endswith('.pdf'))
         if not pdfs:
@@ -1581,10 +1514,6 @@ class Etapa3Frame(ctk.CTkFrame):
                 'secoes': ['tudo'],
                 'caminho_completo': p,
             })
-        pastas = {os.path.dirname(p) for p in pdfs}
-        if len(pastas) == 1:
-            pasta_unica = pastas.pop()
-            _set_setting('nome_base', os.path.basename(pasta_unica))
         self._rebuild_artigos()
         self._lbl_status3.configure(text=f'{len(pdfs)} PDF(s) adicionado(s)')
 
@@ -1665,8 +1594,7 @@ class Etapa3Frame(ctk.CTkFrame):
                         lambda c=c, t=t: self._lbl_status3.configure(
                             text=f'Zotero: lendo {c}/{t} itens…')))
                 prontos, problemas = zotero_bridge.resolver_pdfs(itens)
-                r = {'prontos': prontos, 'problemas': problemas, 'nome': nome,
-                     'nome_base': nome}
+                r = {'prontos': prontos, 'problemas': problemas, 'nome': nome}
             except Exception as exc:
                 r = {'erro': str(exc)}
             self._zot_agendar(lambda r=r: self._zot_fim_importacao(r))
@@ -1696,8 +1624,7 @@ class Etapa3Frame(ctk.CTkFrame):
                             text=f'Zotero: identificando {c}/{t}…')))
                 prontos, problemas = zotero_bridge.resolver_pdfs(itens)
                 resultado = {'prontos': prontos, 'problemas': problemas,
-                             'nome': 'Zotero', 'nao_casadas': nao_casadas,
-                             'manter_nome_base': True}
+                             'nome': 'Zotero', 'nao_casadas': nao_casadas}
             except Exception as exc:
                 resultado = {'erro': str(exc)}
             self._zot_agendar(lambda r=resultado: self._zot_fim_importacao(r))
@@ -1723,8 +1650,6 @@ class Etapa3Frame(ctk.CTkFrame):
 
         if novos:
             self._selecao_raw.extend(novos)
-            if resultado.get('nome_base'):
-                _set_setting('nome_base', resultado['nome_base'])
             self._rebuild_artigos()
 
         self._lbl_status3.configure(
@@ -1776,6 +1701,19 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _rebuild_artigos(self):
         if not self._selecao_raw:
+            self._selecao = []
+            self._engine_labels.clear()
+            self._tipos_pdf = {}
+            for w in self._frame_arts.winfo_children():
+                w.destroy()
+            self._render_vazio()
+            self._lbl_resumo.configure(text='')
+            self._frame_analise.grid_remove()
+            self._btn_rem_dup3.pack_forget()
+            self._btn_revisar_poss3.pack_forget()
+            self._btn_limpar.pack_forget()
+            self._btn_limpar_ocr.pack_forget()
+            self._btn_extrair.configure(state='disabled')
             return
         self._selecao = []
         self._engine_labels.clear()
@@ -1822,9 +1760,9 @@ class Etapa3Frame(ctk.CTkFrame):
         for i, art in enumerate(self._selecao):
             e_dup      = art['arquivo'] in duplicatas
             e_possivel = art['arquivo'] in self._possiveis_duplicatas
-            row_bg = ('#FFF7ED' if e_dup else
+            row_bg = (C_WARN_LT if e_dup else
                       ACCENT_LT if e_possivel else
-                      (BG_CARD if i % 2 == 0 else '#F7F8FA'))
+                      (BG_CARD if i % 2 == 0 else BG_ZEBRA))
             linha  = ctk.CTkFrame(self._frame_arts, fg_color=row_bg,
                                   corner_radius=0, height=ALT_LINHA)
             linha.pack(fill='x', padx=0)
@@ -1893,6 +1831,7 @@ class Etapa3Frame(ctk.CTkFrame):
             self._btn_revisar_poss3.pack(side='right', padx=(0, 6))
         else:
             self._btn_revisar_poss3.pack_forget()
+        self._btn_limpar_ocr.pack_forget()
         self._btn_limpar.pack(side='right')
         self._atualizar_preview_fragmentos()
 
@@ -1931,6 +1870,11 @@ class Etapa3Frame(ctk.CTkFrame):
     def _atualizar_frame_analise(self, n_digital, n_ocr, t_est):
         for w in self._frame_analise.winfo_children():
             w.destroy()
+
+        if n_ocr > 0:
+            self._btn_limpar_ocr.pack(side='right', padx=(0, 6))
+        else:
+            self._btn_limpar_ocr.pack_forget()
 
         if n_digital == 0 and n_ocr == 0:
             self._frame_analise.grid_remove()
@@ -2043,7 +1987,7 @@ class Etapa3Frame(ctk.CTkFrame):
                 row.pack(fill='x', padx=12, pady=2)
                 ctk.CTkCheckBox(row, text='', variable=var, width=20,
                                 checkmark_color='white', fg_color=C_WARN,
-                                hover_color='#8B3A00', border_color=GRAY_BORD
+                                hover_color=C_WARN_HOV, border_color=GRAY_BORD
                                 ).pack(side='left')
                 nome_exib = nome if len(nome) <= 46 else nome[:43] + '…'
                 ctk.CTkLabel(row, text=nome_exib, font=_font(12),
@@ -2077,7 +2021,7 @@ class Etapa3Frame(ctk.CTkFrame):
                      text_color=TEXT_PRI, font=_font(13),
                      command=win.destroy).pack(side='left')
         ctk.CTkButton(btns, text='Remover selecionados', width=180, height=32,
-                     fg_color=C_WARN, hover_color='#8B3A00',
+                     fg_color=C_WARN, hover_color=C_WARN_HOV,
                      text_color='white', font=_font(13, 'bold'),
                      command=_aplicar).pack(side='right')
 
@@ -2093,7 +2037,7 @@ class Etapa3Frame(ctk.CTkFrame):
         self._selecao     = []
         self._pasta       = ''
         self._engine_labels.clear()
-        self._entry_pasta3.delete(0, 'end')
+        self._limpar_pasta3()
         self._frame_analise.grid_remove()
         for w in self._frame_arts.winfo_children():
             w.destroy()
@@ -2104,7 +2048,18 @@ class Etapa3Frame(ctk.CTkFrame):
         self._btn_rem_dup3.pack_forget()
         self._btn_revisar_poss3.pack_forget()
         self._btn_limpar.pack_forget()
-        self._btn_extrair.configure(state='disabled')
+        self._btn_limpar_ocr.pack_forget()
+
+    def _limpar_ocr(self):
+        escaneados = {arq for arq, tipo in self._tipos_pdf.items()
+                      if tipo == 'escaneado'}
+        if not escaneados:
+            return
+        self._selecao_raw = [item for item in self._selecao_raw
+                              if item['arquivo'] not in escaneados]
+        self._rebuild_artigos()
+        self._lbl_status3.configure(
+            text=f'✓  {len(escaneados)} entrada(s) escaneada(s) removida(s)')
 
     def _extrair(self):
         prontos = [a for a in self._selecao if a['encontrado']]
@@ -2115,8 +2070,12 @@ class Etapa3Frame(ctk.CTkFrame):
         fallback_cfg = self._var_fallback.get()
         fragmentar   = self._var_fragmentar.get()
         fmt          = 'md'
-        _nome_base   = _get_setting('nome_base', '')
-        frag_nome    = _nome_base or (os.path.basename(self._pasta) if self._pasta else 'extracao_parte')
+        # Nome digitado pelo usuário tem prioridade; sem ele, o padrão é o
+        # nome da pasta de DESTINO — nunca o de onde os PDFs vieram (pasta de
+        # origem ou coleção do Zotero), que pode nem existir como subpasta
+        # aqui e nem faz sentido pra quem olha os arquivos salvos depois.
+        nome_usuario = self._entry_nome_saida.get().strip()
+        _salvar_settings({**_ler_settings(), 'nome_base': nome_usuario})
         try:
             frag_kb = max(10, float(self._entry_frag_kb.get().strip().replace(',', '.')))
         except ValueError:
@@ -2125,37 +2084,36 @@ class Etapa3Frame(ctk.CTkFrame):
         var_supl   = self._sec_vars.get('suplementar')
         incluir_supl = self._var_tudo.get() or (var_supl.get() if var_supl else False)
 
+        # Toda extração ganha sua própria subpasta em vez de cair solta na
+        # pasta escolhida — junto de dezenas de PDFs, um .md a mais (ou vários,
+        # no caso fragmentado) se perdia no meio dos artigos originais.
+        nome_saida = _nome_arquivo_seguro(nome_usuario or 'extracao_excerpta')
         if self._pasta:
-            # Pasta já definida — salva direto, sem diálogo
-            if fragmentar:
-                path = self._pasta
-            else:
-                nome_arq = (_get_setting('nome_base', '') or 'extracao_seletiva') + f'.{fmt}'
-                path = os.path.join(self._pasta, nome_arq)
+            pai = self._pasta
         else:
-            # Sem pasta — pergunta onde salvar
-            if fragmentar:
-                path = filedialog.askdirectory(
-                    title='Escolher pasta para salvar os fragmentos',
-                    initialdir=os.path.expanduser('~'))
-                if not path:
-                    return
-            else:
-                _nome_dlg = _get_setting('nome_base', '') or 'extracao_seletiva'
-                path = filedialog.asksaveasfilename(
-                    title='Salvar extração seletiva',
-                    defaultextension='.md',
-                    initialfile=f'{_nome_dlg}.md',
-                    filetypes=[('Markdown', '*.md'), ('Todos', '*.*')]
-                )
-                if not path:
-                    return
-                if not path.lower().endswith('.md'):
-                    path += '.md'
+            pai = filedialog.askdirectory(
+                title='Escolher onde salvar a extração',
+                initialdir=os.path.expanduser('~'))
+            if not pai:
+                return
+
+        pasta_saida = os.path.join(pai, nome_saida)
+        i = 2
+        while os.path.isdir(pasta_saida) and os.listdir(pasta_saida):
+            pasta_saida = os.path.join(pai, f'{nome_saida} ({i})')
+            i += 1
+        os.makedirs(pasta_saida, exist_ok=True)
+
+        if fragmentar:
+            path = pasta_saida
+        else:
+            path = os.path.join(pasta_saida, f'{nome_saida}.{fmt}')
+
+        frag_nome = nome_saida
 
         self._cancelando = False
         self._btn_extrair.configure(
-            text='✕  Cancelar', fg_color=C_ERR, hover_color='#991818',
+            text='✕  Cancelar', fg_color=C_ERR, hover_color=C_ERR_HOV,
             command=self._cancelar_extracao)
         self._prog3.set(0)
         self._prog3.pack(side='left', padx=(10, 0))
@@ -2231,6 +2189,7 @@ class Etapa3Frame(ctk.CTkFrame):
             ('Claude Haiku',           500,  '200K tokens de contexto'),
             ('Gemini 1.5 / 2.0 Flash', 2500, '1M tokens de contexto'),
             ('GPT-4o / GPT-4.1',       300,  '128K tokens de contexto'),
+            ('DeepSeek-V3 / R1',       300,  '128K tokens de contexto'),
         ]
 
         win = ctk.CTkToplevel(self)
@@ -2349,8 +2308,18 @@ class ExcerptaApp(ctk.CTk):
             pass
         resolver_fonte()          # antes de construir qualquer widget
         self.title('Excerpta')
-        self.geometry('1200x880')
-        self.minsize(1060, 760)
+        # A lista de artigos (_frame_arts) é rolável — o que não pode faltar
+        # é o resto da coluna (cabeçalho, botões, rodapé), por isso o mínimo
+        # de altura é bem menor que a altura inicial. Sem isso, em notebooks
+        # com tela menor (ex. 1366x768, que sobra ~700px de altura útil
+        # depois da barra de tarefas) a janela abria maior que a tela e não
+        # dava pra reduzir o bastante para ver o botão "Extrair artigos".
+        self.minsize(760, 520)
+        # Abre mais estreita e mais baixa por padrão — quem quiser mais
+        # espaço aumenta na mão pelo próprio gerenciador de janelas do sistema.
+        largura = min(860, self.winfo_screenwidth() - 80)
+        altura = min(700, self.winfo_screenheight() - 100)
+        self.geometry(f'{largura}x{altura}')
         self.configure(fg_color=BG_WINDOW)
 
         frame = Etapa3Frame(self, self)

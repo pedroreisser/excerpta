@@ -6,6 +6,15 @@ nada do resto do projeto.
 
 import json
 import os
+import sys
+
+
+def _pip_flags():
+    """Flags para pip que evitam precisar de permissão de administrador."""
+    if sys.platform == 'win32':
+        return ['--user']
+    # Ubuntu 23+/Debian 12+ exigem --break-system-packages para pip fora de venv
+    return ['--break-system-packages']
 
 
 RECENTS_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -34,14 +43,18 @@ def _get_setting(chave, padrao=None):
     return _ler_settings().get(chave, padrao)
 
 
-def _set_setting(chave, valor):
-    dados = _ler_settings()
-    dados[chave] = valor
-    _salvar_settings(dados)
-
-
 OLLAMA_URL_PADRAO    = 'http://localhost:11434'
 OLLAMA_MODELO_PADRAO = 'qwen2.5:7b-instruct'
+# Sugestões pro dropdown de modelo — cobrem desde PC sem GPU até com GPU
+# dedicada. O usuário pode digitar qualquer outro nome do catálogo do Ollama.
+OLLAMA_MODELOS_RECOMENDADOS = [
+    'qwen2.5:3b-instruct',
+    'qwen2.5:7b-instruct',
+    'qwen2.5:14b-instruct',
+    'llama3.1:8b-instruct',
+    'mistral:7b-instruct',
+    'phi3:mini',
+]
 # Uma chamada com ~15k caracteres de contexto leva ~2 min num 7B em CPU
 # comum — os 25 s antigos estouravam sempre, e o erro era engolido em
 # silêncio. Ajustável na GUI, porque o tempo varia muito com o hardware.

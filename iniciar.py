@@ -8,6 +8,11 @@ import os
 import shutil
 import threading
 
+# config.py é módulo-folha (só stdlib) — seguro de importar aqui, antes de
+# qualquer dependência do Excerpta estar instalada.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigo"))
+from config import _pip_flags  # noqa: E402
+
 # ── Dependências obrigatórias ────────────────────────────────────────────────
 # pymupdf4llm: extração de PDFs digitais (rápido, leve)
 # customtkinter / tkinterdnd2: interface gráfica
@@ -36,15 +41,6 @@ PKG_MANAGERS = [
     ("apk",     ["apk", "add"],                                "python3-tkinter", "py3-pip"),
 ]
 _ENV_JA_TENTOU = "_EXCERPTA_TENTOU_INSTALAR_SO"
-
-
-def _pip_flags():
-    """Flags para pip que evitam precisar de permissão de administrador."""
-    if IS_WIN:
-        return ["--user"]
-    else:
-        # Ubuntu 23+/Debian 12+ exigem --break-system-packages para pip fora de venv
-        return ["--break-system-packages"]
 
 
 def _tk_disponivel():
@@ -143,29 +139,50 @@ def checar_faltando(deps):
     return faltando
 
 
+def _importa_de_verdade(modulo):
+    """Confirma que `modulo` é importável num interpretador novo — o mesmo
+    processo que abre o Excerpta depois. Rodar num subprocesso limpo (em vez
+    de confiar no código de saída do pip, ou importar no próprio processo do
+    instalador) pega o caso em que o pip diz sucesso mas o pacote não fica de
+    fato utilizável (ex.: antivírus removendo a DLL nativa logo após a
+    instalação, comum em pacotes compilados como o pymupdf4llm no Windows).
+    """
+    res = subprocess.run(
+        [sys.executable, "-c", f"import {modulo}"],
+        capture_output=True, text=True
+    )
+    return res.returncode == 0, res.stderr.strip()
+
+
 def _instalar_pacotes(pacotes, callback_log, callback_fim):
     """Instala a lista de pacotes obrigatórios. Roda em thread separada."""
     erros = []
     flags = _pip_flags()
-    for _mod, pacote in pacotes:
+    for modulo, pacote in pacotes:
         callback_log(f"> pip install {pacote}")
         res = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", pacote] + flags,
             capture_output=True, text=True
         )
-        if res.returncode == 0:
-            callback_log(f"  ✓ {pacote} instalado com sucesso")
-        else:
+        if res.returncode != 0:
             # Tenta sem --user / sem --break-system-packages como último recurso
             res2 = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--upgrade", pacote],
                 capture_output=True, text=True
             )
-            if res2.returncode == 0:
-                callback_log(f"  ✓ {pacote} instalado")
-            else:
+            if res2.returncode != 0:
                 erros.append(pacote)
                 callback_log(f"  ✗ Falha: {(res.stderr or res2.stderr).strip()[:200]}")
+                continue
+
+        ok, erro_import = _importa_de_verdade(modulo)
+        if ok:
+            callback_log(f"  ✓ {pacote} instalado e funcionando")
+        else:
+            erros.append(pacote)
+            callback_log(f"  ✗ {pacote} instalado, mas não abre "
+                         f"(pode ser antivírus bloqueando um arquivo): "
+                         f"{erro_import[:200]}")
 
     callback_fim(erros)
 
@@ -451,41 +468,7 @@ def main_console():
         _abrir_app()
 
 
-def main_instalar():
-    """Instala as dependências e sai, sem abrir o programa.
-
-    Modo usado pelo .bat do Windows, que existe só para preparar a máquina.
-    Abrir o Excerpta é sempre pelo iniciar.py sem argumento, igual em todos os
-    sistemas — assim a lista de dependências vive num lugar só, aqui.
-    """
-    faltando = checar_faltando(DEPS_OBRIGATORIAS)
-    if not faltando:
-        print("Todas as dependencias ja estao instaladas.")
-        return 0
-
-    print("Instalando dependencias:")
-    for _, pacote in faltando:
-        print(f"  - {pacote}")
-    print()
-
-    erros = []
-    _instalar_pacotes(faltando, print, erros.extend)
-
-    if erros:
-        print(f"\nFalha ao instalar: {', '.join(erros)}")
-        print("Tente manualmente:")
-        for e in erros:
-            print(f"  pip install {e}" + ("" if IS_WIN else " --break-system-packages"))
-        return 1
-
-    print("\nDependencias instaladas.")
-    return 0
-
-
 if __name__ == "__main__":
-    # O .bat do Windows chama com --apenas-instalar: prepara e sai.
-    APENAS_INSTALAR = "--apenas-instalar" in sys.argv
-
     # Verificar versão do Python
     if sys.version_info < (3, 9):
         print(f"Excerpta requer Python 3.9+. Versão atual: {sys.version}")
@@ -499,9 +482,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     _criar_atalho()
-
-    if APENAS_INSTALAR:
-        sys.exit(main_instalar())
 
     # Tentar GUI, cair em console se tkinter não estiver disponível
     try:

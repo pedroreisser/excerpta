@@ -82,8 +82,3 @@ def _detectar_grupos_possiveis_duplicatas(artigos, hash_cache, excluir):
     for nome in pai:
         grupos.setdefault(find(nome), []).append(nome)
     return list(grupos.values())
-
-
-def extrair_chave_zotero(caminho):
-    sem_ext = os.path.splitext(os.path.basename(caminho))[0]
-    return sem_ext.split(" - ")[0].strip() if " - " in sem_ext else sem_ext.strip()

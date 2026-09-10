@@ -181,11 +181,6 @@ def _md_remover_secoes(md, secoes_a_remover):
     return '\n'.join(l for i, l in enumerate(linhas) if i not in excluir).strip()
 
 
-def _e_review(caminho, md):
-    """Detecta se o artigo é uma review por metadados, nome do arquivo ou heurística."""
-    return _review_com_motivo(caminho, md)[0]
-
-
 def _review_com_motivo(caminho, md):
     """(é_review, motivo). O motivo diz qual regra decidiu — vai para o log."""
     # 1. Metadados internos do PDF

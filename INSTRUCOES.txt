@@ -8,15 +8,6 @@ REQUISITO: Python 3.9 ou superior
   • Linux/Mac: normalmente já vem instalado
 
 
-ANTES DA PRIMEIRA VEZ (só no Windows)
-─────────────────────────────────────
-Dê duplo clique em "Instalar dependências (Windows 11).bat".
-Ele prepara o computador: instala o Python, se faltar, e as bibliotecas
-necessárias. Ele NÃO abre o programa, e só precisa rodar uma vez.
-
-No Linux/Mac não há esta etapa — o próprio iniciar.py resolve tudo.
-
-
 COMO ABRIR O EXCERPTA
 ─────────────────────
 Sempre pelo arquivo "iniciar.py", em qualquer sistema:
@@ -28,6 +19,11 @@ Sempre pelo arquivo "iniciar.py", em qualquer sistema:
 Se faltar alguma dependência, o iniciar.py instala antes de abrir. Nenhuma
 instalação requer permissão de administrador (~50 MB no total: pymupdf4llm,
 customtkinter, tkinterdnd2).
+
+No Linux, essa primeira execução pelo terminal também cria um atalho
+"Excerpta" no menu/busca do sistema. Da segunda vez em diante, abra por ali
+em vez do iniciar.py — dar duplo clique direto no .py faz o gerenciador de
+arquivos perguntar "Executar ou exibir?" toda vez, o atalho não tem esse aviso.
 
 Suporte a OCR (docling, ~2 GB, 10–20 min, necessário só para PDFs escaneados
 sem texto nativo) e IA local (Ollama, opcional) NÃO são instalados nesta
@@ -71,8 +67,5 @@ computador, são informados ao fim da importação.
 
 DÚVIDAS / PROBLEMAS
 ────────────────────
-• Windows: se o instalador disser que não localizou o Python logo após
-  instalá-lo, feche a janela e execute o .bat de novo — na segunda vez ele
-  encontra. Reiniciar o computador não é necessário.
 • Em caso de erro de permissão no Linux, tente:
     pip install pymupdf4llm customtkinter tkinterdnd2 --break-system-packages
