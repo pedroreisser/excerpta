@@ -1062,7 +1062,7 @@ class Etapa3Frame(ctk.CTkFrame):
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)   # lista expande (row 4)
 
-        # ── Linha 0: Zotero (esquerda) + importar pasta / configurações (direita) ──
+        # ── Linha 0: botão Zotero + status (esquerda), importar pasta / configurações (direita) ──
         # Tudo numa linha só, compacto — cabe em telas menores sem esconder o
         # essencial. "Excerpta" já aparece no título da janela, não precisa
         # repetir aqui. Zotero é o fluxo mais usado hoje, por isso fica à
@@ -1079,24 +1079,25 @@ class Etapa3Frame(ctk.CTkFrame):
                       border_width=1, border_color=GRAY_BORD,
                       command=self._abrir_settings).pack(side='right')
         self._btn_pasta3 = ctk.CTkButton(
-            rz, text='Importar PDFs', height=34,
-            fg_color=BG_PANEL, hover_color=GRAY_BORD,
-            text_color=TEXT_PRI, font=_font(13, 'bold'),
-            border_width=1, border_color=GRAY_BORD,
+            rz, text='Importar pasta', height=34,
+            fg_color=GREEN, hover_color=GREEN_HOV,
+            text_color='white', font=_font(13, 'bold'),
+            border_width=1, border_color=GREEN_BORD,
             command=self._sel_pasta3)
         self._btn_pasta3.pack(side='right', padx=(0, 8))
         _bind_dnd_widget(self._btn_pasta3, self._on_dnd_pasta3)
 
-        ctk.CTkLabel(rz, text='Zotero', font=_font(14, 'bold'),
-                     text_color=TEXT_PRI, anchor='w').pack(side='left')
+        # Botão fica sempre visível (desabilitado sem coleção) para não
+        # mudar de lugar quando o Zotero conecta/desconecta.
+        self._btn_zot_importar = ctk.CTkButton(
+            rz, text='Importar Zotero', width=140, height=34,
+            fg_color=ACCENT, hover_color=ACCENT_HOV,
+            text_color='white', font=_font(14, 'bold'),
+            state='disabled', command=self._zot_importar)
+        self._btn_zot_importar.pack(side='left')
         self._lbl_zot = ctk.CTkLabel(rz, text='verificando…', font=_font(14),
                                      text_color=TEXT_SEC, anchor='w')
         self._lbl_zot.pack(side='left', fill='x', expand=True, padx=(10, 10))
-        self._btn_zot_importar = ctk.CTkButton(
-            rz, text='Importar PDFs', width=140, height=34,
-            fg_color=ACCENT, hover_color=ACCENT_HOV,
-            text_color='white', font=_font(14, 'bold'),
-            command=self._zot_importar)
 
         # ── Linha 1: seções a extrair ──────────────────────────────────────────
         sec_card = ctk.CTkFrame(main, fg_color=BG_CARD, border_color=DIVIDER,
@@ -1454,7 +1455,7 @@ class Etapa3Frame(ctk.CTkFrame):
         """Desfaz a seleção de pasta — clicar de novo no botão volta a abrir
         o diálogo em vez de reabrir a mesma pasta."""
         self._pasta = ''
-        self._btn_pasta3.configure(text='Importar PDFs', command=self._sel_pasta3)
+        self._btn_pasta3.configure(text='Importar pasta', command=self._sel_pasta3)
 
     def _aplicar_pasta3(self, pasta):
         if not pasta:
@@ -1556,18 +1557,18 @@ class Etapa3Frame(ctk.CTkFrame):
                 # quem não usa a integração, não um erro que o usuário causou.
                 self._lbl_zot.configure(text='○  Zotero não conectado',
                                         text_color=TEXT_SEC)
-                self._btn_zot_importar.pack_forget()
+                self._btn_zot_importar.configure(state='disabled')
             elif not estado.get('key'):
                 self._lbl_zot.configure(
                     text=f'●  {estado["nome"]} — selecione uma coleção no Zotero',
                     text_color=TEXT_SEC)
-                self._btn_zot_importar.pack_forget()
+                self._btn_zot_importar.configure(state='disabled')
             else:
                 n = estado.get('n_itens')
                 self._lbl_zot.configure(
                     text=f'●  {estado["nome"]}' + (f'  ·  {n} artigo(s)' if n else ''),
                     text_color=ACCENT_TXT)
-                self._btn_zot_importar.pack(side='right')
+                self._btn_zot_importar.configure(state='normal')
         self._zot_reagendar()
 
     def _zot_reagendar(self, ms=2500):
@@ -1633,7 +1634,7 @@ class Etapa3Frame(ctk.CTkFrame):
 
     def _zot_fim_importacao(self, resultado):
         self._zot_importando = False
-        self._btn_zot_importar.configure(state='normal', text='Importar PDFs')
+        self._btn_zot_importar.configure(state='normal', text='Importar Zotero')
 
         if resultado.get('erro'):
             self._lbl_status3.configure(text='')
