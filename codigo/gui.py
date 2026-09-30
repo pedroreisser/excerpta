@@ -1029,6 +1029,9 @@ class Etapa3Frame(ctk.CTkFrame):
         super().__init__(parent, fg_color=BG_WINDOW)
         self._app          = app
         self._pasta        = ''
+        # Nome da coleção do Zotero de onde veio a lista (vazio = pasta do
+        # computador); vira o nome padrão da pasta de saída.
+        self._nome_zotero  = ''
         self._selecao      = []
         self._selecao_raw  = []
         self._var_tudo       = ctk.BooleanVar(value=True)
@@ -1296,7 +1299,7 @@ class Etapa3Frame(ctk.CTkFrame):
             placeholder_text='ex: minha_extracao')
         self._entry_nome_saida.insert(0, _get_setting('nome_base', ''))
         self._entry_nome_saida.pack(side='left', padx=(8, 0))
-        ctk.CTkLabel(row_nome_saida, text='vazio = nome da pasta de destino',
+        ctk.CTkLabel(row_nome_saida, text='vazio = nome da coleção do Zotero ou extracao_excerpta',
                      font=_font(11), text_color=TEXT_SEC
                      ).pack(side='left', padx=(8, 0))
 
@@ -1473,6 +1476,7 @@ class Etapa3Frame(ctk.CTkFrame):
                 messagebox.showerror('Erro', f'Não foi possível criar a pasta:\n{exc}')
                 return
         self._pasta = pasta
+        self._nome_zotero = ''
         self._btn_pasta3.configure(
             text=os.path.basename(pasta.rstrip(os.sep)) or pasta,
             command=self._limpar_pasta3)
@@ -1652,6 +1656,9 @@ class Etapa3Frame(ctk.CTkFrame):
         if novos:
             self._selecao_raw.extend(novos)
             self._rebuild_artigos()
+            # Arrastar do Zotero não diz de qual coleção veio ('Zotero').
+            if nome != 'Zotero':
+                self._nome_zotero = nome
 
         self._lbl_status3.configure(
             text=f'✓  {len(novos)} PDF(s) importado(s) do Zotero — "{nome}"')
@@ -2037,6 +2044,7 @@ class Etapa3Frame(ctk.CTkFrame):
         self._selecao_raw = []
         self._selecao     = []
         self._pasta       = ''
+        self._nome_zotero = ''
         self._engine_labels.clear()
         self._limpar_pasta3()
         self._frame_analise.grid_remove()
@@ -2072,9 +2080,8 @@ class Etapa3Frame(ctk.CTkFrame):
         fragmentar   = self._var_fragmentar.get()
         fmt          = 'md'
         # Nome digitado pelo usuário tem prioridade; sem ele, o padrão é o
-        # nome da pasta de DESTINO — nunca o de onde os PDFs vieram (pasta de
-        # origem ou coleção do Zotero), que pode nem existir como subpasta
-        # aqui e nem faz sentido pra quem olha os arquivos salvos depois.
+        # nome da coleção do Zotero (se a lista veio de lá) ou
+        # 'extracao_excerpta'.
         nome_usuario = self._entry_nome_saida.get().strip()
         _salvar_settings({**_ler_settings(), 'nome_base': nome_usuario})
         try:
@@ -2088,7 +2095,8 @@ class Etapa3Frame(ctk.CTkFrame):
         # Toda extração ganha sua própria subpasta em vez de cair solta na
         # pasta escolhida — junto de dezenas de PDFs, um .md a mais (ou vários,
         # no caso fragmentado) se perdia no meio dos artigos originais.
-        nome_saida = _nome_arquivo_seguro(nome_usuario or 'extracao_excerpta')
+        nome_saida = _nome_arquivo_seguro(
+            nome_usuario or self._nome_zotero or 'extracao_excerpta')
         if self._pasta:
             pai = self._pasta
         else:
